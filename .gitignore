@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Runtime data
+data/beingai.db
+data/workspaces/
+
+# Build
+frontend/.next/
+frontend/out/
+dist/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
