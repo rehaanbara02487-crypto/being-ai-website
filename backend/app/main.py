@@ -16,6 +16,8 @@ import requests
 from app.agent_file_actions import plan_file_actions
 from app.autonomous_agent import get_task, request_stop, start_task
 from app.file_action_tools import FileActionError, apply_actions
+from app.git_service import GitServiceError
+import app.git_service as git_service
 from app.ollama_service import OllamaOfflineError, stream_chat_response
 from app.config import get_settings
 from app.repository_indexer import build_repository_context
@@ -33,6 +35,11 @@ from app.schemas import (
     CreateFileRequest,
     CreateFolderRequest,
     FileRequest,
+    GitBranchRequest,
+    GitCommitRequest,
+    GitRestoreRequest,
+    GitRevertRequest,
+    GitSnapshotRequest,
     OllamaChatRequest,
     RenamePathRequest,
     ReviewApplyRequest,
@@ -162,6 +169,14 @@ def get_repository_context_for_request(project_name: str, prompt: str, max_conte
         prompt,
         max_chars=context_limit,
     )
+
+
+def git_project_dir(project_name: str) -> Path:
+    return get_project_dir(project_name)
+
+
+def handle_git_error(exc: GitServiceError):
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class PromptRequest(BaseModel):
@@ -595,6 +610,111 @@ async def delete_project_path(project_name: str, path: str):
         "type": deleted_type,
         "path": path
     }
+
+
+@app.get("/projects/{project_name}/git/branch")
+async def git_current_branch(project_name: str):
+    try:
+        project_dir = git_project_dir(project_name)
+        return {
+            "branch": git_service.current_branch(project_dir),
+            "branches": git_service.list_branches(project_dir),
+        }
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.get("/projects/{project_name}/git/status")
+async def git_status(project_name: str):
+    try:
+        return git_service.status(git_project_dir(project_name))
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.get("/projects/{project_name}/git/diff")
+async def git_diff(project_name: str, path: str | None = None):
+    try:
+        return git_service.diff(git_project_dir(project_name), path)
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.get("/projects/{project_name}/git/history")
+async def git_history(project_name: str, limit: int = 30):
+    try:
+        return {
+            "commits": git_service.history(git_project_dir(project_name), limit)
+        }
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.post("/projects/{project_name}/git/branches")
+async def git_create_branch(project_name: str, request: GitBranchRequest):
+    try:
+        return git_service.create_branch(
+            git_project_dir(project_name),
+            request.name,
+            checkout=request.checkout,
+        )
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.post("/projects/{project_name}/git/checkout")
+async def git_switch_branch(project_name: str, request: GitBranchRequest):
+    try:
+        return git_service.switch_branch(git_project_dir(project_name), request.name)
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.post("/projects/{project_name}/git/commit")
+async def git_commit(project_name: str, request: GitCommitRequest):
+    try:
+        return git_service.commit(
+            git_project_dir(project_name),
+            request.message,
+            files=request.files,
+            create_snapshot=request.create_snapshot,
+        )
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.get("/projects/{project_name}/git/snapshots")
+async def git_snapshots(project_name: str):
+    try:
+        return {
+            "snapshots": git_service.snapshots(git_project_dir(project_name))
+        }
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.post("/projects/{project_name}/git/snapshots")
+async def git_create_snapshot(project_name: str, request: GitSnapshotRequest):
+    try:
+        return git_service.create_snapshot_tag(git_project_dir(project_name), request.name)
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.post("/projects/{project_name}/git/restore")
+async def git_restore(project_name: str, request: GitRestoreRequest):
+    try:
+        return git_service.restore(git_project_dir(project_name), request.ref, request.path)
+    except GitServiceError as exc:
+        handle_git_error(exc)
+
+
+@app.post("/projects/{project_name}/git/revert")
+async def git_revert(project_name: str, request: GitRevertRequest):
+    try:
+        return git_service.revert(git_project_dir(project_name), request.commit_hash)
+    except GitServiceError as exc:
+        handle_git_error(exc)
 @app.post("/edit-file")
 async def edit_file(request: FileRequest):
 

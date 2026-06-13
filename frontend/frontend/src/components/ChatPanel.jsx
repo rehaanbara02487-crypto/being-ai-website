@@ -384,8 +384,10 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
         border: "1px solid rgba(255,255,255,0.1)",
         borderRadius: "22px",
         display: "flex",
+        flex: "1 1 0",
         flexDirection: "column",
         minWidth: 0,
+        minHeight: 0,
         overflow: "hidden",
       }}
     >

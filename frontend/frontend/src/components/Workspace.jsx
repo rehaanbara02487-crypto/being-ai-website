@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 
 import ChatPanel from "./ChatPanel";
+import SourceControlPanel from "./SourceControlPanel";
 import {
   createProjectFile,
   createProjectFolder,
@@ -804,17 +805,37 @@ export default function Workspace({ onClose }) {
           </div>
         </main>
 
-        <ChatPanel
-          selectedProject={selectedProject}
-          onFilesChanged={async () => {
-            if (selectedProject) {
-              await refreshProjectFiles(selectedProject, "Workspace updated by AI agent.");
-              if (selectedFile) {
-                await openFile(selectedFile);
-              }
-            }
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "18px",
+            minHeight: 0,
           }}
-        />
+        >
+          <ChatPanel
+            selectedProject={selectedProject}
+            onFilesChanged={async () => {
+              if (selectedProject) {
+                await refreshProjectFiles(selectedProject, "Workspace updated by AI agent.");
+                if (selectedFile) {
+                  await openFile(selectedFile);
+                }
+              }
+            }}
+          />
+          <SourceControlPanel
+            selectedProject={selectedProject}
+            onWorkspaceChanged={async () => {
+              if (selectedProject) {
+                await refreshProjectFiles(selectedProject, "Workspace updated from source control.");
+                if (selectedFile) {
+                  await openFile(selectedFile);
+                }
+              }
+            }}
+          />
+        </div>
       </div>
     </div>
   );

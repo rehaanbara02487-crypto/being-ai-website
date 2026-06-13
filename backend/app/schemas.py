@@ -58,3 +58,27 @@ class AutonomousAgentStartRequest(BaseModel):
     model: str | None = None
     max_iterations: int = 3
     max_context_chars: int | None = None
+
+
+class GitBranchRequest(BaseModel):
+    name: str
+    checkout: bool = True
+
+
+class GitCommitRequest(BaseModel):
+    message: str
+    files: list[str] | None = None
+    create_snapshot: bool = True
+
+
+class GitRestoreRequest(BaseModel):
+    ref: str
+    path: str | None = None
+
+
+class GitRevertRequest(BaseModel):
+    commit_hash: str
+
+
+class GitSnapshotRequest(BaseModel):
+    name: str | None = None

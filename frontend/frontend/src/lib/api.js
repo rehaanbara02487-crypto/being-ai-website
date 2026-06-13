@@ -224,3 +224,82 @@ export function stopAutonomousAgentTask(taskId) {
     method: "POST",
   });
 }
+
+export function getGitBranch(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/branch`);
+}
+
+export function getGitStatus(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/status`);
+}
+
+export function getGitDiff(projectName, filePath) {
+  const params = filePath ? `?${new URLSearchParams({ path: filePath })}` : "";
+  return request(`/projects/${encodeURIComponent(projectName)}/git/diff${params}`);
+}
+
+export function getGitHistory(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/history`);
+}
+
+export function createGitBranch(projectName, name, checkout = true) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/branches`, {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      checkout,
+    }),
+  });
+}
+
+export function switchGitBranch(projectName, name) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/checkout`, {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+    }),
+  });
+}
+
+export function commitGitChanges(projectName, message, files) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/commit`, {
+    method: "POST",
+    body: JSON.stringify({
+      message,
+      files,
+      create_snapshot: true,
+    }),
+  });
+}
+
+export function getGitSnapshots(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/snapshots`);
+}
+
+export function createGitSnapshot(projectName, name) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/snapshots`, {
+    method: "POST",
+    body: JSON.stringify({
+      name: name || undefined,
+    }),
+  });
+}
+
+export function restoreGitRef(projectName, ref, path) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/restore`, {
+    method: "POST",
+    body: JSON.stringify({
+      ref,
+      path: path || undefined,
+    }),
+  });
+}
+
+export function revertGitCommit(projectName, commitHash) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/revert`, {
+    method: "POST",
+    body: JSON.stringify({
+      commit_hash: commitHash,
+    }),
+  });
+}
