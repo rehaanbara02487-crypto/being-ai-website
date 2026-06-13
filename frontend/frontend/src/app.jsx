@@ -1,14 +1,20 @@
-import Contact from "./components/Contact";
+import { useState } from "react";
+
+import Contact from "./components/contact";
 import Services from "./components/services";
-import Projects from "./components/Projects";
+import Projects from "./components/projects";
 import SpaceScene from "./SpaceScene";
-import About from "./components/About";
-import Footer from "./components/Footer";
-import { Canvas} from "@react-three/fiber";
+import About from "./components/about";
+import Footer from "./components/footer";
+import Workspace from "./components/Workspace";
 
 export default function App() {
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+
   return (
     <>
+      {workspaceOpen && <Workspace onClose={() => setWorkspaceOpen(false)} />}
+
       {/* HERO SECTION */}
       <div
         style={{
@@ -131,6 +137,7 @@ export default function App() {
             }}
           >
             <button
+              onClick={() => setWorkspaceOpen(true)}
               style={{
                 background: "#00ffff",
                 color: "#000",
