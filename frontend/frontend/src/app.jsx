@@ -24,8 +24,7 @@ export default function App() {
   }, []);
 
   const navigateToWorkspace = () => {
-    window.history.pushState({}, "", "/workspace");
-    setCurrentPath("/workspace");
+    window.location.assign("/workspace");
   };
 
   const closeWorkspace = () => {
@@ -161,6 +160,7 @@ export default function App() {
             }}
           >
             <button
+              type="button"
               onClick={navigateToWorkspace}
               style={{
                 background: "#00ffff",
@@ -171,6 +171,8 @@ export default function App() {
                 fontWeight: "bold",
                 fontSize: "1rem",
                 cursor: "pointer",
+                position: "relative",
+                zIndex: 500,
                 boxShadow: "0 0 25px rgba(0,255,255,0.4)",
               }}
             >

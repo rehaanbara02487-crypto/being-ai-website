@@ -105,6 +105,7 @@ export default function SpaceScene() {
         position: "fixed",
         inset: 0,
         zIndex: -10,
+        pointerEvents: "none",
       }}
     >
       <color attach="background" args={["#000814"]} />
