@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import Editor from "@monaco-editor/react";
 import {
+  createProjectFile,
+  createProjectFolder,
+  deleteProjectPath,
   getProject,
   getProjectFile,
   listProjects,
+  renameProjectPath,
   saveProjectFile,
 } from "../lib/api";
 
@@ -42,7 +46,9 @@ export default function Workspace({ onClose }) {
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState("");
   const [files, setFiles] = useState([]);
+  const [folders, setFolders] = useState([]);
   const [selectedFile, setSelectedFile] = useState("");
+  const [selectedFolder, setSelectedFolder] = useState("");
   const [content, setContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -81,10 +87,29 @@ export default function Workspace({ onClose }) {
     };
   }, []);
 
+  async function refreshProjectFiles(projectName, successMessage) {
+    const data = await getProject(projectName);
+    const projectFiles = data.files || [];
+    const projectFolders = data.folders || [];
+
+    setFiles(projectFiles);
+    setFolders(projectFolders);
+    setMessage(
+      successMessage ||
+        (projectFiles.length || projectFolders.length
+          ? "Choose a file to open it in the editor."
+          : "This project has no files yet.")
+    );
+
+    return data;
+  }
+
   async function openProject(projectName) {
     setSelectedProject(projectName);
     setSelectedFile("");
+    setSelectedFolder("");
     setFiles([]);
+    setFolders([]);
     setContent("");
     setIsDirty(false);
     setLoading(true);
@@ -92,14 +117,7 @@ export default function Workspace({ onClose }) {
     setMessage(`Loading ${projectName}...`);
 
     try {
-      const data = await getProject(projectName);
-      const projectFiles = data.files || [];
-      setFiles(projectFiles);
-      setMessage(
-        projectFiles.length
-          ? "Choose a file to open it in the editor."
-          : "This project has no files yet."
-      );
+      await refreshProjectFiles(projectName);
     } catch (loadError) {
       setError(loadError.message);
       setMessage("Unable to load project files.");
@@ -112,6 +130,7 @@ export default function Workspace({ onClose }) {
     if (!selectedProject) return;
 
     setSelectedFile(filePath);
+    setSelectedFolder("");
     setLoading(true);
     setError("");
     setMessage(`Opening ${filePath}...`);
@@ -146,6 +165,123 @@ export default function Workspace({ onClose }) {
       setMessage("Unable to save file.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function createFile() {
+    if (!selectedProject) return;
+
+    const filePath = window.prompt("New file path");
+    if (!filePath) return;
+
+    setLoading(true);
+    setError("");
+    setMessage(`Creating ${filePath}...`);
+
+    try {
+      await createProjectFile(selectedProject, filePath);
+      await refreshProjectFiles(selectedProject, `Created file ${filePath}.`);
+    } catch (createError) {
+      setError(createError.message);
+      setMessage("Unable to create file.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createFolder() {
+    if (!selectedProject) return;
+
+    const folderPath = window.prompt("New folder path");
+    if (!folderPath) return;
+
+    setLoading(true);
+    setError("");
+    setMessage(`Creating ${folderPath}...`);
+
+    try {
+      await createProjectFolder(selectedProject, folderPath);
+      await refreshProjectFiles(selectedProject, `Created folder ${folderPath}.`);
+    } catch (createError) {
+      setError(createError.message);
+      setMessage("Unable to create folder.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function renameSelectedPath() {
+    if (!selectedProject) return;
+
+    const currentPath = selectedFolder || selectedFile;
+    if (!currentPath) {
+      setMessage("Select a file or folder to rename.");
+      return;
+    }
+
+    const newPath = window.prompt("Rename to", currentPath);
+    if (!newPath || newPath === currentPath) return;
+
+    setLoading(true);
+    setError("");
+    setMessage(`Renaming ${currentPath}...`);
+
+    try {
+      await renameProjectPath(selectedProject, currentPath, newPath);
+
+      if (selectedFile === currentPath || selectedFile.startsWith(`${currentPath}/`)) {
+        setSelectedFile("");
+        setContent("");
+        setIsDirty(false);
+      }
+
+      if (selectedFolder === currentPath || selectedFolder.startsWith(`${currentPath}/`)) {
+        setSelectedFolder("");
+      }
+
+      await refreshProjectFiles(selectedProject, `Renamed ${currentPath} to ${newPath}.`);
+    } catch (renameError) {
+      setError(renameError.message);
+      setMessage("Unable to rename path.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteSelectedPath() {
+    if (!selectedProject) return;
+
+    const currentPath = selectedFolder || selectedFile;
+    if (!currentPath) {
+      setMessage("Select a file or folder to delete.");
+      return;
+    }
+
+    if (!window.confirm(`Delete ${currentPath}?`)) return;
+
+    setLoading(true);
+    setError("");
+    setMessage(`Deleting ${currentPath}...`);
+
+    try {
+      await deleteProjectPath(selectedProject, currentPath);
+
+      if (selectedFile === currentPath || selectedFile.startsWith(`${currentPath}/`)) {
+        setSelectedFile("");
+        setContent("");
+        setIsDirty(false);
+      }
+
+      if (selectedFolder === currentPath || selectedFolder.startsWith(`${currentPath}/`)) {
+        setSelectedFolder("");
+      }
+
+      await refreshProjectFiles(selectedProject, `Deleted ${currentPath}.`);
+    } catch (deleteError) {
+      setError(deleteError.message);
+      setMessage("Unable to delete path.");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -254,26 +390,72 @@ export default function Workspace({ onClose }) {
         >
           <h3 style={{ color: "#00ffff", marginTop: 0 }}>Files</h3>
           {selectedProject ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {files.map((file) => (
-                <button
-                  key={file}
-                  onClick={() => openFile(file)}
-                  style={{
-                    ...buttonBase,
-                    background:
-                      file === selectedFile
-                        ? "rgba(0,255,255,0.22)"
-                        : "rgba(255,255,255,0.06)",
-                    fontFamily:
-                      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                    overflowWrap: "anywhere",
-                  }}
-                >
-                  {file}
+            <>
+              <div
+                style={{
+                  display: "grid",
+                  gap: "8px",
+                  gridTemplateColumns: "1fr 1fr",
+                  marginBottom: "14px",
+                }}
+              >
+                <button onClick={createFile} style={buttonBase}>
+                  + File
                 </button>
-              ))}
-            </div>
+                <button onClick={createFolder} style={buttonBase}>
+                  + Folder
+                </button>
+                <button onClick={renameSelectedPath} style={buttonBase}>
+                  Rename
+                </button>
+                <button onClick={deleteSelectedPath} style={buttonBase}>
+                  Delete
+                </button>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {folders.map((folder) => (
+                  <button
+                    key={folder}
+                    onClick={() => {
+                      setSelectedFolder(folder);
+                      setSelectedFile("");
+                    }}
+                    style={{
+                      ...buttonBase,
+                      background:
+                        folder === selectedFolder
+                          ? "rgba(0,255,255,0.22)"
+                          : "rgba(255,255,255,0.06)",
+                      fontFamily:
+                        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {folder}/
+                  </button>
+                ))}
+
+                {files.map((file) => (
+                  <button
+                    key={file}
+                    onClick={() => openFile(file)}
+                    style={{
+                      ...buttonBase,
+                      background:
+                        file === selectedFile
+                          ? "rgba(0,255,255,0.22)"
+                          : "rgba(255,255,255,0.06)",
+                      fontFamily:
+                        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {file}
+                  </button>
+                ))}
+              </div>
+            </>
           ) : (
             <p style={{ opacity: 0.72 }}>Select a project first.</p>
           )}

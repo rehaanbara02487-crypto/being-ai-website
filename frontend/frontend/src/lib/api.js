@@ -12,7 +12,7 @@ async function request(path, options = {}) {
   const data = await response.json();
 
   if (!response.ok || data.error) {
-    throw new Error(data.error || `Request failed with status ${response.status}`);
+    throw new Error(data.error || data.detail || `Request failed with status ${response.status}`);
   }
 
   return data;
@@ -39,5 +39,41 @@ export function saveProjectFile(projectName, filePath, content) {
       filename: filePath,
       content,
     }),
+  });
+}
+
+export function createProjectFile(projectName, filePath, content = "") {
+  return request(`/projects/${encodeURIComponent(projectName)}/file`, {
+    method: "POST",
+    body: JSON.stringify({
+      path: filePath,
+      content,
+    }),
+  });
+}
+
+export function createProjectFolder(projectName, folderPath) {
+  return request(`/projects/${encodeURIComponent(projectName)}/folder`, {
+    method: "POST",
+    body: JSON.stringify({
+      path: folderPath,
+    }),
+  });
+}
+
+export function renameProjectPath(projectName, path, newPath) {
+  return request(`/projects/${encodeURIComponent(projectName)}/path`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      path,
+      new_path: newPath,
+    }),
+  });
+}
+
+export function deleteProjectPath(projectName, path) {
+  const params = new URLSearchParams({ path });
+  return request(`/projects/${encodeURIComponent(projectName)}/path?${params}`, {
+    method: "DELETE",
   });
 }
