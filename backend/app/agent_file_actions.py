@@ -89,10 +89,26 @@ Plan file tool calls for this user request:
         tool_calls = []
 
     previews = preview_actions(project_dir, tool_calls)
+    valid_previews = [preview for preview in previews if preview.get("valid")]
+    change_summary = {
+        "files_changed": len({
+            preview["new_path"] or preview["path"]
+            for preview in valid_previews
+            if preview.get("tool") != "create_folder"
+        }),
+        "folders_changed": len([
+            preview
+            for preview in valid_previews
+            if preview.get("tool") == "create_folder"
+        ]),
+        "lines_added": sum(preview.get("lines_added", 0) for preview in valid_previews),
+        "lines_removed": sum(preview.get("lines_removed", 0) for preview in valid_previews),
+    }
 
     return {
         "message": parsed_response.get("message", "Review the planned file changes."),
         "tool_calls": tool_calls,
         "previews": previews,
+        "change_summary": change_summary,
         "requires_approval": True,
     }

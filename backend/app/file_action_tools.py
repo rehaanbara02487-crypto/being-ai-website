@@ -70,6 +70,24 @@ def unified_diff(old: str, new: str, fromfile: str, tofile: str) -> str:
     )
 
 
+def diff_stats(diff: str) -> dict:
+    lines_added = 0
+    lines_removed = 0
+
+    for line in diff.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            lines_added += 1
+        elif line.startswith("-"):
+            lines_removed += 1
+
+    return {
+        "lines_added": lines_added,
+        "lines_removed": lines_removed,
+    }
+
+
 def preview_action(project_dir: Path, action: dict, index: int) -> dict:
     normalized = normalize_action(action)
     target_path = resolve_workspace_path(project_dir, normalized.path)
@@ -82,6 +100,8 @@ def preview_action(project_dir: Path, action: dict, index: int) -> dict:
         "new_path": normalized.new_path,
         "summary": "",
         "diff": "",
+        "lines_added": 0,
+        "lines_removed": 0,
         "valid": True,
         "error": None,
         "args": {
@@ -140,6 +160,8 @@ def preview_action(project_dir: Path, action: dict, index: int) -> dict:
     except (OSError, UnicodeDecodeError) as exc:
         raise FileActionError(str(exc)) from exc
 
+    result.update(diff_stats(result["diff"]))
+
     return result
 
 
@@ -157,6 +179,8 @@ def preview_actions(project_dir: Path, actions: list[dict]) -> list[dict]:
                 "new_path": action.get("new_path") or (action.get("args") or {}).get("new_path"),
                 "summary": "Invalid file action",
                 "diff": "",
+                "lines_added": 0,
+                "lines_removed": 0,
                 "valid": False,
                 "error": str(exc),
                 "args": action.get("args") or action,

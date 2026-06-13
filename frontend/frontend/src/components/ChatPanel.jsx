@@ -23,6 +23,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
   const [contextFiles, setContextFiles] = useState([]);
   const [agentMode, setAgentMode] = useState(false);
   const [plannedActions, setPlannedActions] = useState([]);
+  const [changeSummary, setChangeSummary] = useState(null);
   const [planMessage, setPlanMessage] = useState("");
   const [applying, setApplying] = useState(false);
   const messagesRef = useRef(null);
@@ -62,6 +63,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
     setInput("");
     setError("");
     setPlannedActions([]);
+    setChangeSummary(null);
     setPlanMessage("");
     setContextFiles([]);
     setContextStatus(
@@ -82,6 +84,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
 
         setPlanMessage(plan.message);
         setPlannedActions(plan.previews || []);
+        setChangeSummary(plan.change_summary || null);
 
         if (plan.context) {
           setContextStatus(plan.context.status);
@@ -183,6 +186,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
         },
       ]);
       setPlannedActions([]);
+      setChangeSummary(null);
       setPlanMessage("");
       onFilesChanged?.();
     } catch (applyError) {
@@ -194,6 +198,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
 
   function rejectPlan() {
     setPlannedActions([]);
+    setChangeSummary(null);
     setPlanMessage("");
     setMessages((currentMessages) => [
       ...currentMessages,
@@ -301,6 +306,61 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
             </span>
           </div>
 
+          <div
+            style={{
+              display: "grid",
+              gap: "8px",
+              gridTemplateColumns: "repeat(3, 1fr)",
+              marginBottom: "12px",
+            }}
+          >
+            <div
+              style={{
+                background: "rgba(0,255,255,0.1)",
+                border: "1px solid rgba(0,255,255,0.18)",
+                borderRadius: "12px",
+                padding: "10px",
+              }}
+            >
+              <div style={{ color: "rgba(255,255,255,0.62)", fontSize: "0.72rem" }}>
+                Files changed
+              </div>
+              <strong style={{ color: "#00ffff" }}>
+                {changeSummary?.files_changed ?? plannedActions.filter((action) => action.valid).length}
+              </strong>
+            </div>
+            <div
+              style={{
+                background: "rgba(0,255,255,0.1)",
+                border: "1px solid rgba(0,255,255,0.18)",
+                borderRadius: "12px",
+                padding: "10px",
+              }}
+            >
+              <div style={{ color: "rgba(255,255,255,0.62)", fontSize: "0.72rem" }}>
+                Lines added
+              </div>
+              <strong style={{ color: "#8affc1" }}>
+                +{changeSummary?.lines_added ?? 0}
+              </strong>
+            </div>
+            <div
+              style={{
+                background: "rgba(0,255,255,0.1)",
+                border: "1px solid rgba(0,255,255,0.18)",
+                borderRadius: "12px",
+                padding: "10px",
+              }}
+            >
+              <div style={{ color: "rgba(255,255,255,0.62)", fontSize: "0.72rem" }}>
+                Lines removed
+              </div>
+              <strong style={{ color: "#ff8585" }}>
+                -{changeSummary?.lines_removed ?? 0}
+              </strong>
+            </div>
+          </div>
+
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             {plannedActions.map((action) => (
               <div
@@ -321,6 +381,17 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
                 >
                   {action.summary}
                 </div>
+                {action.valid && (
+                  <div
+                    style={{
+                      color: "rgba(255,255,255,0.58)",
+                      fontSize: "0.78rem",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    +{action.lines_added || 0} / -{action.lines_removed || 0}
+                  </div>
+                )}
                 {action.error && (
                   <div style={{ color: "#ff8585", marginBottom: "8px" }}>
                     {action.error}
@@ -416,6 +487,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
                 setContextStatus("Workspace context ready");
               }
               setPlannedActions([]);
+              setChangeSummary(null);
               setPlanMessage("");
             }}
             type="checkbox"
