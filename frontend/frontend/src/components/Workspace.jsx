@@ -806,9 +806,12 @@ export default function Workspace({ onClose }) {
 
         <ChatPanel
           selectedProject={selectedProject}
-          onFilesChanged={() => {
+          onFilesChanged={async () => {
             if (selectedProject) {
-              refreshProjectFiles(selectedProject, "Workspace updated by AI agent.");
+              await refreshProjectFiles(selectedProject, "Workspace updated by AI agent.");
+              if (selectedFile) {
+                await openFile(selectedFile);
+              }
             }
           }}
         />

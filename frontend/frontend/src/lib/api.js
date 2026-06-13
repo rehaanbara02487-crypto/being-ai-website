@@ -180,6 +180,24 @@ export function applyAgentFileActions({ projectName, actions, prompt }) {
   });
 }
 
+export function applyReviewActions({ reviewId, actionIds }) {
+  return request(`/agent/reviews/${encodeURIComponent(reviewId)}/apply`, {
+    method: "POST",
+    body: JSON.stringify({
+      action_ids: actionIds,
+    }),
+  });
+}
+
+export function rejectReview({ reviewId, reason }) {
+  return request(`/agent/reviews/${encodeURIComponent(reviewId)}/reject`, {
+    method: "POST",
+    body: JSON.stringify({
+      reason,
+    }),
+  });
+}
+
 export function startAutonomousAgentTask({
   projectName,
   prompt,

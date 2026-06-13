@@ -103,6 +103,7 @@ Plan file tool calls for this user request:
         ]),
         "lines_added": sum(preview.get("lines_added", 0) for preview in valid_previews),
         "lines_removed": sum(preview.get("lines_removed", 0) for preview in valid_previews),
+        "lines_modified": sum(preview.get("lines_modified", 0) for preview in valid_previews),
     }
 
     return {

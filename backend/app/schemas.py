@@ -44,6 +44,14 @@ class AgentFileActionApplyRequest(BaseModel):
     prompt: str | None = None
 
 
+class ReviewApplyRequest(BaseModel):
+    action_ids: list[str] | None = None
+
+
+class ReviewRejectRequest(BaseModel):
+    reason: str | None = None
+
+
 class AutonomousAgentStartRequest(BaseModel):
     project_name: str
     prompt: str

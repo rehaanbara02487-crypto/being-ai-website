@@ -19,6 +19,13 @@ from app.file_action_tools import FileActionError, apply_actions
 from app.ollama_service import OllamaOfflineError, stream_chat_response
 from app.config import get_settings
 from app.repository_indexer import build_repository_context
+from app.review_sessions import (
+    create_review_session,
+    get_pending_actions,
+    get_review_session,
+    mark_actions,
+    reject_review_session,
+)
 from app.schemas import (
     AgentFileActionApplyRequest,
     AgentFileActionPlanRequest,
@@ -28,6 +35,8 @@ from app.schemas import (
     FileRequest,
     OllamaChatRequest,
     RenamePathRequest,
+    ReviewApplyRequest,
+    ReviewRejectRequest,
 )
 from app.file_writer import save_file
 
@@ -248,8 +257,12 @@ async def plan_agent_file_actions(request: AgentFileActionPlanRequest):
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Invalid tool plan from Ollama: {exc}") from exc
 
+    review_session = create_review_session(request.project_name, request.prompt, plan)
+
     return {
         **plan,
+        "review_session": review_session,
+        "review_session_id": review_session["id"],
         "context": None if not context_payload else {
             key: value
             for key, value in context_payload.items()
@@ -271,6 +284,59 @@ async def apply_agent_file_actions(request: AgentFileActionApplyRequest):
         "status": "applied",
         "results": results,
         "message": f"Applied {len(results)} file operation(s).",
+    }
+
+
+@app.get("/agent/reviews/{review_id}")
+async def get_agent_review(review_id: str):
+    review = get_review_session(review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review session not found")
+    return review
+
+
+@app.post("/agent/reviews/{review_id}/apply")
+async def apply_agent_review_actions(review_id: str, request: ReviewApplyRequest):
+    review = get_review_session(review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review session not found")
+
+    project_dir = get_project_dir(review["project_name"])
+    actions = get_pending_actions(review_id, request.action_ids)
+
+    if not actions:
+        raise HTTPException(status_code=400, detail="No pending valid actions selected")
+
+    try:
+        results = apply_actions(project_dir, actions)
+    except FileActionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    action_ids = request.action_ids or [
+        preview["id"]
+        for preview in review["previews"]
+        if preview.get("status") == "pending" and preview.get("valid")
+    ]
+    updated_review = mark_actions(review_id, action_ids, "applied")
+
+    return {
+        "status": "applied",
+        "results": results,
+        "review_session": updated_review,
+        "message": f"Applied {len(results)} file operation(s).",
+    }
+
+
+@app.post("/agent/reviews/{review_id}/reject")
+async def reject_agent_review(review_id: str, request: ReviewRejectRequest):
+    review = reject_review_session(review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review session not found")
+
+    return {
+        "status": "rejected",
+        "review_session": review,
+        "message": request.reason or "Review changes rejected.",
     }
 
 

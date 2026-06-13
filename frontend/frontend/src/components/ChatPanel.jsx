@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   applyAgentFileActions,
+  applyReviewActions,
   getAutonomousAgentTask,
   planAgentFileActions,
+  rejectReview,
   streamOllamaChat,
   startAutonomousAgentTask,
   stopAutonomousAgentTask,
@@ -27,6 +29,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
   const [agentMode, setAgentMode] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
   const [agentTask, setAgentTask] = useState(null);
+  const [reviewSession, setReviewSession] = useState(null);
   const [plannedActions, setPlannedActions] = useState([]);
   const [changeSummary, setChangeSummary] = useState(null);
   const [planMessage, setPlanMessage] = useState("");
@@ -62,6 +65,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
       setPlanMessage(task.final_plan.message);
       setPlannedActions(task.final_plan.previews || []);
       setChangeSummary(task.final_plan.change_summary || null);
+      setReviewSession(task.final_plan.review_session || null);
     }
 
     if (["review", "failed", "stopped"].includes(task.status)) {
@@ -127,6 +131,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
     setError("");
     setPlannedActions([]);
     setChangeSummary(null);
+    setReviewSession(null);
     setPlanMessage("");
     setAgentTask(null);
     setContextFiles([]);
@@ -169,7 +174,8 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
         });
 
         setPlanMessage(plan.message);
-        setPlannedActions(plan.previews || []);
+        setReviewSession(plan.review_session || null);
+        setPlannedActions(plan.review_session?.previews || plan.previews || []);
         setChangeSummary(plan.change_summary || null);
 
         if (plan.context) {
@@ -254,14 +260,19 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
     setError("");
 
     try {
-      const result = await applyAgentFileActions({
-        projectName: selectedProject,
-        actions: validActions.map((action) => ({
-          tool: action.tool,
-          args: action.args,
-        })),
-        prompt: planMessage,
-      });
+      const result = reviewSession?.id
+        ? await applyReviewActions({
+            reviewId: reviewSession.id,
+            actionIds: validActions.map((action) => action.id),
+          })
+        : await applyAgentFileActions({
+            projectName: selectedProject,
+            actions: validActions.map((action) => ({
+              tool: action.tool,
+              args: action.args,
+            })),
+            prompt: planMessage,
+          });
 
       setMessages((currentMessages) => [
         ...currentMessages,
@@ -273,6 +284,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
       ]);
       setPlannedActions([]);
       setChangeSummary(null);
+      setReviewSession(null);
       setPlanMessage("");
       onFilesChanged?.();
     } catch (applyError) {
@@ -283,8 +295,15 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
   }
 
   function rejectPlan() {
+    if (reviewSession?.id) {
+      rejectReview({
+        reviewId: reviewSession.id,
+        reason: "Planned file changes discarded.",
+      }).catch((rejectError) => setError(rejectError.message));
+    }
     setPlannedActions([]);
     setChangeSummary(null);
+    setReviewSession(null);
     setPlanMessage("");
     setMessages((currentMessages) => [
       ...currentMessages,
@@ -294,6 +313,53 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
         content: "Planned file changes discarded.",
       },
     ]);
+  }
+
+  async function approveAction(action) {
+    if (!selectedProject || !action.valid) return;
+
+    setApplying(true);
+    setError("");
+
+    try {
+      let result;
+
+      if (reviewSession?.id) {
+        result = await applyReviewActions({
+          reviewId: reviewSession.id,
+          actionIds: [action.id],
+        });
+        setReviewSession(result.review_session);
+        setPlannedActions(result.review_session?.previews || []);
+      } else {
+        result = await applyAgentFileActions({
+          projectName: selectedProject,
+          actions: [{ tool: action.tool, args: action.args }],
+          prompt: planMessage,
+        });
+        setPlannedActions((currentActions) =>
+          currentActions.map((currentAction) =>
+            currentAction.id === action.id
+              ? { ...currentAction, status: "applied" }
+              : currentAction
+          )
+        );
+      }
+
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          id: `assistant-applied-${Date.now()}`,
+          role: "assistant",
+          content: result.message,
+        },
+      ]);
+      onFilesChanged?.();
+    } catch (applyError) {
+      setError(applyError.message);
+    } finally {
+      setApplying(false);
+    }
   }
 
   async function stopAutonomousTask() {
@@ -504,7 +570,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
             style={{
               display: "grid",
               gap: "8px",
-              gridTemplateColumns: "repeat(3, 1fr)",
+              gridTemplateColumns: "repeat(4, 1fr)",
               marginBottom: "12px",
             }}
           >
@@ -553,7 +619,44 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
                 -{changeSummary?.lines_removed ?? 0}
               </strong>
             </div>
+            <div
+              style={{
+                background: "rgba(0,255,255,0.1)",
+                border: "1px solid rgba(0,255,255,0.18)",
+                borderRadius: "12px",
+                padding: "10px",
+              }}
+            >
+              <div style={{ color: "rgba(255,255,255,0.62)", fontSize: "0.72rem" }}>
+                Modified
+              </div>
+              <strong style={{ color: "#ffd37a" }}>
+                ~{changeSummary?.lines_modified ?? 0}
+              </strong>
+            </div>
           </div>
+
+          <details
+            open
+            style={{
+              color: "rgba(255,255,255,0.72)",
+              fontSize: "0.82rem",
+              marginBottom: "12px",
+            }}
+          >
+            <summary>Changed files ({plannedActions.length})</summary>
+            <ul style={{ margin: "8px 0 0", paddingLeft: "18px" }}>
+              {plannedActions.map((action) => (
+                <li key={`file-${action.id}`}>
+                  {action.new_path || action.path}{" "}
+                  <span style={{ color: "rgba(255,255,255,0.5)" }}>
+                    +{action.lines_added || 0} / -{action.lines_removed || 0} / ~{action.lines_modified || 0}
+                    {action.status ? ` - ${action.status}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             {plannedActions.map((action) => (
@@ -573,7 +676,18 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
                     marginBottom: "8px",
                   }}
                 >
-                  {action.summary}
+                  <span>{action.summary}</span>
+                  {action.status && (
+                    <span
+                      style={{
+                        color: action.status === "applied" ? "#8affc1" : "rgba(255,255,255,0.58)",
+                        fontSize: "0.78rem",
+                        marginLeft: "8px",
+                      }}
+                    >
+                      {action.status}
+                    </span>
+                  )}
                 </div>
                 {action.valid && (
                   <div
@@ -583,7 +697,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
                       marginBottom: "8px",
                     }}
                   >
-                    +{action.lines_added || 0} / -{action.lines_removed || 0}
+                    +{action.lines_added || 0} / -{action.lines_removed || 0} / ~{action.lines_modified || 0}
                   </div>
                 )}
                 {action.error && (
@@ -605,6 +719,29 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
                 >
                   {action.diff || "No textual diff available."}
                 </pre>
+                <button
+                  disabled={applying || !action.valid || action.status === "applied"}
+                  onClick={() => approveAction(action)}
+                  style={{
+                    background:
+                      applying || !action.valid || action.status === "applied"
+                        ? "rgba(255,255,255,0.18)"
+                        : "#00ffff",
+                    border: "none",
+                    borderRadius: "999px",
+                    color: "black",
+                    cursor:
+                      applying || !action.valid || action.status === "applied"
+                        ? "not-allowed"
+                        : "pointer",
+                    fontWeight: "bold",
+                    marginTop: "10px",
+                    padding: "8px 12px",
+                  }}
+                  type="button"
+                >
+                  {action.status === "applied" ? "Applied" : "Approve File"}
+                </button>
               </div>
             ))}
           </div>
@@ -685,6 +822,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
               }
               setPlannedActions([]);
               setChangeSummary(null);
+              setReviewSession(null);
               setPlanMessage("");
             }}
             type="checkbox"

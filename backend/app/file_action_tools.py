@@ -85,6 +85,7 @@ def diff_stats(diff: str) -> dict:
     return {
         "lines_added": lines_added,
         "lines_removed": lines_removed,
+        "lines_modified": min(lines_added, lines_removed),
     }
 
 
@@ -102,6 +103,7 @@ def preview_action(project_dir: Path, action: dict, index: int) -> dict:
         "diff": "",
         "lines_added": 0,
         "lines_removed": 0,
+        "lines_modified": 0,
         "valid": True,
         "error": None,
         "args": {
@@ -181,6 +183,7 @@ def preview_actions(project_dir: Path, actions: list[dict]) -> list[dict]:
                 "diff": "",
                 "lines_added": 0,
                 "lines_removed": 0,
+                "lines_modified": 0,
                 "valid": False,
                 "error": str(exc),
                 "args": action.get("args") or action,
