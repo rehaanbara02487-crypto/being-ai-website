@@ -97,3 +97,49 @@ export function stopProjectRun(projectName) {
 export function getProjectRunStreamUrl(projectName) {
   return `${API_BASE_URL}/projects/${encodeURIComponent(projectName)}/run/stream`;
 }
+
+export async function streamOllamaChat({ prompt, model, onEvent }) {
+  const response = await fetch(`${API_BASE_URL}/ollama/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+      model: model || undefined,
+    }),
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || data.detail || `Request failed with status ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+
+    for (const event of events) {
+      const dataLine = event
+        .split("\n")
+        .find((line) => line.startsWith("data: "));
+
+      if (!dataLine) continue;
+
+      onEvent(JSON.parse(dataLine.slice(6)));
+    }
+  }
+
+  if (buffer.startsWith("data: ")) {
+    onEvent(JSON.parse(buffer.slice(6)));
+  }
+}

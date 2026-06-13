@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
+
+import ChatPanel from "./ChatPanel";
 import {
   createProjectFile,
   createProjectFolder,
@@ -476,7 +478,7 @@ export default function Workspace({ onClose }) {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "260px 320px minmax(0, 1fr)",
+          gridTemplateColumns: "240px 300px minmax(0, 1fr) 340px",
           gap: "18px",
           height: "calc(100vh - 154px)",
           minHeight: 0,
@@ -801,6 +803,8 @@ export default function Workspace({ onClose }) {
             </pre>
           </div>
         </main>
+
+        <ChatPanel />
       </div>
     </div>
   );

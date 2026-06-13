@@ -27,6 +27,14 @@ class Settings(BaseSettings):
         default=REPO_ROOT / "data" / "workspaces",
         validation_alias="BEINGAI_WORKSPACE_ROOT",
     )
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        validation_alias="OLLAMA_BASE_URL",
+    )
+    ollama_model: str = Field(
+        default="qwen2.5-coder:7b",
+        validation_alias="OLLAMA_MODEL",
+    )
     sqlalchemy_echo: bool = Field(default=False, validation_alias="SQLALCHEMY_ECHO")
 
     @property

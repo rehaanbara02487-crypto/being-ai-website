@@ -19,3 +19,9 @@ class CreateFolderRequest(BaseModel):
 class RenamePathRequest(BaseModel):
     path: str
     new_path: str
+
+
+class OllamaChatRequest(BaseModel):
+    prompt: str
+    model: str | None = None
+    system_prompt: str | None = None

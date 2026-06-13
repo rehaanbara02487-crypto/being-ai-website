@@ -13,7 +13,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import requests
 
-from app.schemas import CreateFileRequest, CreateFolderRequest, FileRequest, RenamePathRequest
+from app.ollama_service import OllamaOfflineError, stream_chat_response
+from app.schemas import (
+    CreateFileRequest,
+    CreateFolderRequest,
+    FileRequest,
+    OllamaChatRequest,
+    RenamePathRequest,
+)
 from app.file_writer import save_file
 
 app = FastAPI(
@@ -150,6 +157,25 @@ async def root():
         "status": "running",
         "name": "BeingAI Engineer"
     }
+
+
+@app.post("/ollama/chat/stream")
+async def ollama_chat_stream(request: OllamaChatRequest):
+    if not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    def event_stream():
+        try:
+            for payload in stream_chat_response(
+                request.prompt,
+                model=request.model,
+                system_prompt=request.system_prompt,
+            ):
+                yield f"data: {json.dumps(payload)}\n\n"
+        except OllamaOfflineError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/generate")
