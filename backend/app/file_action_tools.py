@@ -26,22 +26,14 @@ class NormalizedAction:
     new_path: str | None = None
 
 
+from app.workspace_paths import PathEscapeError, resolve_path_in_project_dir
+
+
 def resolve_workspace_path(project_dir: Path, relative_path: str) -> Path:
-    if not relative_path or not relative_path.strip():
-        raise FileActionError("Path is required")
-
-    requested_path = Path(relative_path)
-    if requested_path.is_absolute():
-        raise FileActionError("Absolute paths are not allowed")
-
-    target_path = (project_dir / requested_path).resolve()
-
     try:
-        target_path.relative_to(project_dir)
-    except ValueError as exc:
-        raise FileActionError("Path escapes project workspace") from exc
-
-    return target_path
+        return resolve_path_in_project_dir(project_dir, relative_path)
+    except PathEscapeError as exc:
+        raise FileActionError(str(exc)) from exc
 
 
 def normalize_action(action: dict) -> NormalizedAction:

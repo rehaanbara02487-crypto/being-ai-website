@@ -1,8 +1,7 @@
 import re
 import json
-from pathlib import Path
 
-WORKSPACE_ROOT = Path("data/workspaces")
+from app.workspace_paths import ensure_project_name_safe, resolve_workspace_target
 
 
 def build_project(project_name: str, model_response: str):
@@ -21,8 +20,7 @@ def build_project(project_name: str, model_response: str):
             f"Model returned invalid format. Keys found: {list(data.keys())}"
         )
 
-    project_dir = WORKSPACE_ROOT / project_name
-    project_dir.mkdir(parents=True, exist_ok=True)
+    ensure_project_name_safe(project_name)
 
     created_files = []
 
@@ -30,7 +28,7 @@ def build_project(project_name: str, model_response: str):
         filename = file["filename"]
         content = file["content"]
 
-        file_path = project_dir / filename
+        file_path = resolve_workspace_target(project_name, filename)
 
         file_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -823,6 +823,12 @@ export default function Workspace({ onClose }) {
                 }
               }
             }}
+            onProjectCreated={async (projectName) => {
+              const data = await listProjects();
+              setProjects(data.projects || []);
+              await openProject(projectName);
+              setMessage(`Project "${projectName}" created. Open a file or click Run.`);
+            }}
           />
           <SourceControlPanel
             selectedProject={selectedProject}

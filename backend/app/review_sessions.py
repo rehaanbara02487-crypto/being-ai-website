@@ -24,6 +24,10 @@ def create_review_session(project_name: str, prompt: str, plan: dict) -> dict:
         "previews": stored_plan.get("previews", []),
         "change_summary": stored_plan.get("change_summary"),
         "requires_approval": True,
+        "is_greenfield": stored_plan.get("is_greenfield", False),
+        "run_profile": stored_plan.get("run_profile"),
+        "stack": stored_plan.get("stack"),
+        "proposed_project_name": stored_plan.get("proposed_project_name", project_name),
         "created_at": time.time(),
         "updated_at": time.time(),
     }

@@ -50,3 +50,8 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def get_workspace_root() -> Path:
+    """Resolved absolute path to the project workspaces directory."""
+    return get_settings().beingai_workspace_root.expanduser().resolve()

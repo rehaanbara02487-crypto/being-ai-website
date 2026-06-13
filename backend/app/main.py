@@ -7,6 +7,8 @@ import subprocess
 import threading
 
 from app.project_builder import build_project
+from app.project_planner import plan_new_project
+from app.project_runner import detect_run_profile, run_install_if_needed, start_project_process
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -19,7 +21,8 @@ from app.file_action_tools import FileActionError, apply_actions
 from app.git_service import GitServiceError
 import app.git_service as git_service
 from app.ollama_service import OllamaOfflineError, stream_chat_response
-from app.config import get_settings
+from app.config import get_settings, get_workspace_root
+from app.workspace_paths import resolve_project_dir, resolve_workspace_path
 from app.repository_indexer import build_repository_context
 from app.review_sessions import (
     create_review_session,
@@ -41,6 +44,7 @@ from app.schemas import (
     GitRevertRequest,
     GitSnapshotRequest,
     OllamaChatRequest,
+    ProjectPlanRequest,
     RenamePathRequest,
     ReviewApplyRequest,
     ReviewRejectRequest,
@@ -68,46 +72,25 @@ app.add_middleware(
 )
 
 
-WORKSPACE_ROOT = Path("data/workspaces")
 RUNNING_PROJECTS = {}
 RUNNING_PROJECTS_LOCK = threading.Lock()
 
 
 def get_project_dir(project_name: str) -> Path:
-    project_dir = (WORKSPACE_ROOT / project_name).resolve()
+    return resolve_project_dir(project_name, must_exist=True)
 
-    if not project_dir.exists() or not project_dir.is_dir():
-        raise HTTPException(status_code=404, detail="Project not found")
 
-    return project_dir
+def ensure_project_workspace(project_name: str) -> Path:
+    from app.workspace_paths import ensure_project_name_safe
+
+    ensure_project_name_safe(project_name)
+    project_dir = get_workspace_root() / project_name
+    project_dir.mkdir(parents=True, exist_ok=True)
+    return resolve_project_dir(project_name, must_exist=True)
 
 
 def resolve_project_path(project_name: str, relative_path: str) -> Path:
-    if not relative_path or not relative_path.strip():
-        raise HTTPException(status_code=400, detail="Path is required")
-
-    requested_path = Path(relative_path)
-    if requested_path.is_absolute():
-        raise HTTPException(status_code=400, detail="Absolute paths are not allowed")
-
-    project_dir = get_project_dir(project_name)
-    target_path = (project_dir / requested_path).resolve()
-
-    try:
-        target_path.relative_to(project_dir)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Path escapes project workspace")
-
-    return target_path
-
-
-def get_project_entrypoint(project_dir: Path) -> Path:
-    for filename in ("main.py", "app.py"):
-        entrypoint = project_dir / filename
-        if entrypoint.is_file():
-            return entrypoint
-
-    raise HTTPException(status_code=400, detail="Project must contain main.py or app.py")
+    return resolve_workspace_path(project_name, relative_path)
 
 
 def append_run_log(run_info: dict, stream: str, message: str):
@@ -243,6 +226,33 @@ async def ollama_chat_stream(request: OllamaChatRequest):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@app.post("/agent/projects/plan")
+async def plan_new_project_endpoint(request: ProjectPlanRequest):
+    if not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    try:
+        plan = plan_new_project(
+            request.prompt,
+            model=request.model,
+            project_name=request.project_name,
+            stack=request.stack,
+        )
+    except OllamaOfflineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid project plan from Ollama: {exc}") from exc
+
+    project_name = plan["proposed_project_name"]
+    review_session = create_review_session(project_name, request.prompt, plan)
+
+    return {
+        **plan,
+        "review_session": review_session,
+        "review_session_id": review_session["id"],
+    }
+
+
 @app.post("/agent/file-actions/plan")
 async def plan_agent_file_actions(request: AgentFileActionPlanRequest):
     if not request.prompt.strip():
@@ -316,7 +326,11 @@ async def apply_agent_review_actions(review_id: str, request: ReviewApplyRequest
     if not review:
         raise HTTPException(status_code=404, detail="Review session not found")
 
-    project_dir = get_project_dir(review["project_name"])
+    if review.get("is_greenfield"):
+        project_dir = ensure_project_workspace(review["project_name"])
+    else:
+        project_dir = get_project_dir(review["project_name"])
+
     actions = get_pending_actions(review_id, request.action_ids)
 
     if not actions:
@@ -326,6 +340,17 @@ async def apply_agent_review_actions(review_id: str, request: ReviewApplyRequest
         results = apply_actions(project_dir, actions)
     except FileActionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if review.get("is_greenfield"):
+        try:
+            git_service.ensure_git_repo(project_dir)
+            git_service.commit(
+                project_dir,
+                f"Initial scaffold: {review.get('prompt', 'new project')[:72]}",
+                create_snapshot=True,
+            )
+        except GitServiceError:
+            pass
 
     action_ids = request.action_ids or [
         preview["id"]
@@ -338,6 +363,9 @@ async def apply_agent_review_actions(review_id: str, request: ReviewApplyRequest
         "status": "applied",
         "results": results,
         "review_session": updated_review,
+        "project_name": review["project_name"],
+        "is_greenfield": review.get("is_greenfield", False),
+        "run_profile": review.get("run_profile"),
         "message": f"Applied {len(results)} file operation(s).",
     }
 
@@ -468,7 +496,8 @@ async def save_generated_file(request: FileRequest):
 @app.get("/projects")
 async def list_projects():
 
-    workspace = WORKSPACE_ROOT
+    workspace = get_workspace_root()
+    workspace.mkdir(parents=True, exist_ok=True)
 
     projects = []
 
@@ -484,12 +513,7 @@ async def list_projects():
 @app.get("/projects/{project_name}")
 async def get_project_files(project_name: str):
 
-    project_dir = WORKSPACE_ROOT / project_name
-
-    if not project_dir.exists():
-        return {
-            "error": "Project not found"
-        }
+    project_dir = resolve_project_dir(project_name, must_exist=True)
 
     files = []
     folders = []
@@ -511,18 +535,7 @@ async def read_file(
     path: str
 ):
 
-    from pathlib import Path
-
-    file_path = (
-        Path("data/workspaces")
-        / project_name
-        / path
-    )
-
-    if not file_path.exists():
-        return {
-            "error": "File not found"
-        }
+    file_path = resolve_workspace_path(project_name, path, must_exist=True)
 
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -635,6 +648,8 @@ async def git_status(project_name: str):
 @app.get("/projects/{project_name}/git/diff")
 async def git_diff(project_name: str, path: str | None = None):
     try:
+        if path:
+            resolve_workspace_path(project_name, path, must_exist=False)
         return git_service.diff(git_project_dir(project_name), path)
     except GitServiceError as exc:
         handle_git_error(exc)
@@ -673,6 +688,9 @@ async def git_switch_branch(project_name: str, request: GitBranchRequest):
 @app.post("/projects/{project_name}/git/commit")
 async def git_commit(project_name: str, request: GitCommitRequest):
     try:
+        if request.files:
+            for file_path in request.files:
+                resolve_workspace_path(project_name, file_path, must_exist=False)
         return git_service.commit(
             git_project_dir(project_name),
             request.message,
@@ -704,6 +722,8 @@ async def git_create_snapshot(project_name: str, request: GitSnapshotRequest):
 @app.post("/projects/{project_name}/git/restore")
 async def git_restore(project_name: str, request: GitRestoreRequest):
     try:
+        if request.path:
+            resolve_workspace_path(project_name, request.path, must_exist=False)
         return git_service.restore(git_project_dir(project_name), request.ref, request.path)
     except GitServiceError as exc:
         handle_git_error(exc)
@@ -735,16 +755,7 @@ async def ai_edit(
     instruction: str
 ):
 
-    file_path = (
-        Path("data/workspaces")
-        / project_name
-        / filename
-    )
-
-    if not file_path.exists():
-        return {
-            "error": "File not found"
-        }
+    file_path = resolve_workspace_path(project_name, filename, must_exist=True)
 
     with open(file_path, "r", encoding="utf-8") as f:
         current_code = f.read()
@@ -794,12 +805,7 @@ No comments outside code.
 @app.get("/project-context/{project_name}")
 async def project_context(project_name: str):
 
-    project_dir = Path("data/workspaces") / project_name
-
-    if not project_dir.exists():
-        return {
-            "error": "Project not found"
-        }
+    project_dir = resolve_project_dir(project_name, must_exist=True)
 
     context = {}
 
@@ -827,15 +833,7 @@ class PlanRequest(BaseModel):
 @app.post("/ai-plan")
 async def ai_plan(request: PlanRequest):
 
-    project_dir = (
-        Path("data/workspaces")
-        / request.project_name
-    )
-
-    if not project_dir.exists():
-        return {
-            "error": "Project not found"
-        }
+    project_dir = resolve_project_dir(request.project_name, must_exist=True)
 
     context = ""
 
@@ -895,15 +893,7 @@ JSON only.
 @app.post("/ai-apply-plan")
 async def ai_apply_plan(request: ApplyPlanRequest):
 
-    project_dir = (
-        Path("data/workspaces")
-        / request.project_name
-    )
-
-    if not project_dir.exists():
-        return {
-            "error": "Project not found"
-        }
+    resolve_project_dir(request.project_name, must_exist=True)
 
     updated_files = []
 
@@ -950,7 +940,7 @@ No explanations.
     )["files_to_edit"]
 
     for relative_path in files_to_edit:
-        file = project_dir / relative_path
+        file = resolve_workspace_path(request.project_name, relative_path, must_exist=True)
 
         if not file.is_file():
                 continue
@@ -1034,36 +1024,37 @@ Return the FULL modified file.
 @app.post("/projects/{project_name}/run")
 async def start_project_run(project_name: str):
     project_dir = get_project_dir(project_name)
-    entrypoint = get_project_entrypoint(project_dir)
+    profile = detect_run_profile(project_dir)
 
     with RUNNING_PROJECTS_LOCK:
         existing_run = RUNNING_PROJECTS.get(project_name)
         if existing_run and existing_run["running"]:
             raise HTTPException(status_code=409, detail="Project is already running")
 
-    process = subprocess.Popen(
-        [sys.executable, "-u", entrypoint.name],
-        cwd=str(project_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-        bufsize=1,
-    )
-
     run_info = {
-        "process": process,
+        "process": None,
         "running": True,
         "returncode": None,
-        "entrypoint": entrypoint.name,
-        "logs": [
-            {
-                "stream": "system",
-                "message": f"Started {entrypoint.name}\n",
-            }
-        ],
+        "entrypoint": profile.get("entrypoint") or profile.get("start_command"),
+        "logs": [],
     }
+
+    def log_callback(stream: str, message: str):
+        append_run_log(run_info, stream, message)
+
+    try:
+        run_install_if_needed(project_dir, profile, log_callback)
+        process = start_project_process(project_dir, profile)
+    except HTTPException:
+        with RUNNING_PROJECTS_LOCK:
+            RUNNING_PROJECTS.pop(project_name, None)
+        raise
+
+    run_info["process"] = process
+    run_info["logs"].append({
+        "stream": "system",
+        "message": f"Started {run_info['entrypoint']}\n",
+    })
 
     with RUNNING_PROJECTS_LOCK:
         RUNNING_PROJECTS[project_name] = run_info
@@ -1171,10 +1162,7 @@ async def stop_project_run(project_name: str):
 @app.post("/run-project")
 async def run_project(project_name: str):
 
-    project_dir = Path("data/workspaces") / project_name
-
-    if not project_dir.exists():
-        return {"error": "Project not found"}
+    project_dir = resolve_project_dir(project_name, must_exist=True)
 
     try:
 

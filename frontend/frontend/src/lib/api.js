@@ -169,6 +169,18 @@ export function planAgentFileActions({
   });
 }
 
+export function planNewProject({ prompt, projectName, model, stack }) {
+  return request("/agent/projects/plan", {
+    method: "POST",
+    body: JSON.stringify({
+      prompt,
+      project_name: projectName || undefined,
+      model: model || undefined,
+      stack: stack || undefined,
+    }),
+  });
+}
+
 export function applyAgentFileActions({ projectName, actions, prompt }) {
   return request("/agent/file-actions/apply", {
     method: "POST",

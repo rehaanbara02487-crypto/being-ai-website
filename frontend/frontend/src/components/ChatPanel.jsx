@@ -5,18 +5,27 @@ import {
   applyReviewActions,
   getAutonomousAgentTask,
   planAgentFileActions,
+  planNewProject,
   rejectReview,
   streamOllamaChat,
   startAutonomousAgentTask,
   stopAutonomousAgentTask,
 } from "../lib/api";
 
-export default function ChatPanel({ selectedProject, onFilesChanged }) {
+function isGreenfieldPrompt(prompt) {
+  const lowered = prompt.toLowerCase();
+  return (
+    /\b(build|create|make|generate|scaffold|new)\b/.test(lowered) &&
+    /\b(app|application|project|api|website|todo|react|flask|fastapi)\b/.test(lowered)
+  );
+}
+
+export default function ChatPanel({ selectedProject, onFilesChanged, onProjectCreated }) {
   const [messages, setMessages] = useState([
     {
       id: "welcome",
       role: "assistant",
-      content: "Ask BEING AI to generate code. Example: Create a Flask hello world application.",
+      content: "Ask BEING AI to build a project. Example: Build a modern React Todo App.",
     },
   ]);
   const [input, setInput] = useState("");
@@ -33,6 +42,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
   const [plannedActions, setPlannedActions] = useState([]);
   const [changeSummary, setChangeSummary] = useState(null);
   const [planMessage, setPlanMessage] = useState("");
+  const [proposedProjectName, setProposedProjectName] = useState("");
   const [applying, setApplying] = useState(false);
   const messagesRef = useRef(null);
   const taskPollRef = useRef(null);
@@ -106,8 +116,12 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
 
     const prompt = input.trim();
     if (!prompt || generating) return;
-    if (agentMode && !selectedProject) {
-      setError("Select a project before using Agent Mode.");
+    if (agentMode && autonomousMode && !selectedProject) {
+      setError("Select a project before using Autonomous Mode.");
+      return;
+    }
+    if (agentMode && !selectedProject && !isGreenfieldPrompt(prompt)) {
+      setError('Use a build/create prompt (e.g. "Build a modern React Todo App") or select a project.');
       return;
     }
 
@@ -133,6 +147,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
     setChangeSummary(null);
     setReviewSession(null);
     setPlanMessage("");
+    setProposedProjectName("");
     setAgentTask(null);
     setContextFiles([]);
     setContextStatus(
@@ -166,14 +181,20 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
           return;
         }
 
-        const plan = await planAgentFileActions({
-          projectName: selectedProject,
-          prompt,
-          model: model.trim(),
-          useWorkspaceContext,
-        });
+        const plan = selectedProject
+          ? await planAgentFileActions({
+              projectName: selectedProject,
+              prompt,
+              model: model.trim(),
+              useWorkspaceContext,
+            })
+          : await planNewProject({
+              prompt,
+              model: model.trim(),
+            });
 
         setPlanMessage(plan.message);
+        setProposedProjectName(plan.proposed_project_name || plan.review_session?.project_name || "");
         setReviewSession(plan.review_session || null);
         setPlannedActions(plan.review_session?.previews || plan.previews || []);
         setChangeSummary(plan.change_summary || null);
@@ -183,12 +204,17 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
           setContextFiles(plan.context.files || []);
         }
 
+        const projectLabel = plan.proposed_project_name || selectedProject;
         setMessages((currentMessages) =>
           currentMessages.map((message) =>
             message.id === assistantId
               ? {
                   ...message,
-                  content: `${plan.message}\n\nReview the planned file changes below before applying.`,
+                  content: `${plan.message}\n\n${
+                    plan.is_greenfield
+                      ? `New project "${projectLabel}" is ready for review. Approve to create it in the workspace.`
+                      : "Review the planned file changes below before applying."
+                  }`,
                 }
               : message
           )
@@ -254,7 +280,9 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
 
   async function approvePlan() {
     const validActions = plannedActions.filter((action) => action.valid);
-    if (!selectedProject || !validActions.length) return;
+    const projectName =
+      selectedProject || reviewSession?.project_name || proposedProjectName;
+    if (!projectName || !validActions.length) return;
 
     setApplying(true);
     setError("");
@@ -266,7 +294,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
             actionIds: validActions.map((action) => action.id),
           })
         : await applyAgentFileActions({
-            projectName: selectedProject,
+            projectName,
             actions: validActions.map((action) => ({
               tool: action.tool,
               args: action.args,
@@ -286,7 +314,13 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
       setChangeSummary(null);
       setReviewSession(null);
       setPlanMessage("");
-      onFilesChanged?.();
+      setProposedProjectName("");
+
+      if (result.is_greenfield && result.project_name) {
+        await onProjectCreated?.(result.project_name);
+      } else {
+        onFilesChanged?.();
+      }
     } catch (applyError) {
       setError(applyError.message);
     } finally {
@@ -316,7 +350,9 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
   }
 
   async function approveAction(action) {
-    if (!selectedProject || !action.valid) return;
+    const projectName =
+      selectedProject || reviewSession?.project_name || proposedProjectName;
+    if (!projectName || !action.valid) return;
 
     setApplying(true);
     setError("");
@@ -333,7 +369,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
         setPlannedActions(result.review_session?.previews || []);
       } else {
         result = await applyAgentFileActions({
-          projectName: selectedProject,
+          projectName,
           actions: [{ tool: action.tool, args: action.args }],
           prompt: planMessage,
         });
@@ -354,7 +390,11 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
           content: result.message,
         },
       ]);
-      onFilesChanged?.();
+      if (result.is_greenfield && result.project_name) {
+        await onProjectCreated?.(result.project_name);
+      } else {
+        onFilesChanged?.();
+      }
     } catch (applyError) {
       setError(applyError.message);
     } finally {
@@ -812,7 +852,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
         >
           <input
             checked={agentMode}
-            disabled={!selectedProject || generating || applying}
+            disabled={generating || applying}
             onChange={(event) => {
               setAgentMode(event.target.checked);
               if (event.target.checked) {

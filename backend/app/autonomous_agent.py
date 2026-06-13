@@ -18,7 +18,10 @@ from app.repository_indexer import build_repository_context, should_skip_path
 
 TASKS: dict[str, dict] = {}
 TASKS_LOCK = threading.Lock()
-RUN_ROOT = Path("data/.agent_runs")
+
+
+def get_agent_run_root() -> Path:
+    return get_settings().beingai_workspace_root.parent / ".agent_runs"
 
 
 def create_task(project_name: str, prompt: str, model: str | None, max_iterations: int, max_context_chars: int | None) -> dict:
@@ -126,8 +129,9 @@ def start_task(project_dir: Path, project_name: str, prompt: str, model: str | N
 
 
 def copy_project_to_sandbox(project_dir: Path, task_id: str) -> Path:
-    RUN_ROOT.mkdir(parents=True, exist_ok=True)
-    sandbox_dir = RUN_ROOT / task_id
+    run_root = get_agent_run_root()
+    run_root.mkdir(parents=True, exist_ok=True)
+    sandbox_dir = run_root / task_id
 
     if sandbox_dir.exists():
         shutil.rmtree(sandbox_dir)

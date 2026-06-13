@@ -4,7 +4,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 Write-Host "BeingAI dev — starting backend and frontend..." -ForegroundColor Cyan
 
 # Ensure the FastAPI workspace directory exists
-New-Item -ItemType Directory -Force -Path "$Root\backend\data\workspaces" | Out-Null
+New-Item -ItemType Directory -Force -Path "$Root\data\workspaces" | Out-Null
 
 # Initialize DB if missing
 if (-not (Test-Path "$Root\data\beingai.db")) {

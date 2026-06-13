@@ -60,6 +60,13 @@ class AutonomousAgentStartRequest(BaseModel):
     max_context_chars: int | None = None
 
 
+class ProjectPlanRequest(BaseModel):
+    prompt: str
+    project_name: str | None = None
+    model: str | None = None
+    stack: str | None = None
+
+
 class GitBranchRequest(BaseModel):
     name: str
     checkout: bool = True
