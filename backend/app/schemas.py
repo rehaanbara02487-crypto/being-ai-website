@@ -42,3 +42,11 @@ class AgentFileActionApplyRequest(BaseModel):
     project_name: str
     actions: list[dict]
     prompt: str | None = None
+
+
+class AutonomousAgentStartRequest(BaseModel):
+    project_name: str
+    prompt: str
+    model: str | None = None
+    max_iterations: int = 3
+    max_context_chars: int | None = None

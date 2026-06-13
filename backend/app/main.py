@@ -14,6 +14,7 @@ from pydantic import BaseModel
 import requests
 
 from app.agent_file_actions import plan_file_actions
+from app.autonomous_agent import get_task, request_stop, start_task
 from app.file_action_tools import FileActionError, apply_actions
 from app.ollama_service import OllamaOfflineError, stream_chat_response
 from app.config import get_settings
@@ -21,6 +22,7 @@ from app.repository_indexer import build_repository_context
 from app.schemas import (
     AgentFileActionApplyRequest,
     AgentFileActionPlanRequest,
+    AutonomousAgentStartRequest,
     CreateFileRequest,
     CreateFolderRequest,
     FileRequest,
@@ -270,6 +272,38 @@ async def apply_agent_file_actions(request: AgentFileActionApplyRequest):
         "results": results,
         "message": f"Applied {len(results)} file operation(s).",
     }
+
+
+@app.post("/agent/tasks")
+async def start_autonomous_agent_task(request: AutonomousAgentStartRequest):
+    if not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    project_dir = get_project_dir(request.project_name)
+    return start_task(
+        project_dir,
+        request.project_name,
+        request.prompt,
+        request.model,
+        request.max_iterations,
+        request.max_context_chars,
+    )
+
+
+@app.get("/agent/tasks/{task_id}")
+async def get_autonomous_agent_task(task_id: str):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@app.post("/agent/tasks/{task_id}/stop")
+async def stop_autonomous_agent_task(task_id: str):
+    task = request_stop(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 
 @app.post("/generate")

@@ -179,3 +179,30 @@ export function applyAgentFileActions({ projectName, actions, prompt }) {
     }),
   });
 }
+
+export function startAutonomousAgentTask({
+  projectName,
+  prompt,
+  model,
+  maxIterations = 3,
+}) {
+  return request("/agent/tasks", {
+    method: "POST",
+    body: JSON.stringify({
+      project_name: projectName,
+      prompt,
+      model: model || undefined,
+      max_iterations: maxIterations,
+    }),
+  });
+}
+
+export function getAutonomousAgentTask(taskId) {
+  return request(`/agent/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export function stopAutonomousAgentTask(taskId) {
+  return request(`/agent/tasks/${encodeURIComponent(taskId)}/stop`, {
+    method: "POST",
+  });
+}

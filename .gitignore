@@ -9,6 +9,7 @@ venv/
 # Runtime data
 data/beingai.db
 data/workspaces/
+backend/data/.agent_runs/
 
 # Build
 frontend/.next/

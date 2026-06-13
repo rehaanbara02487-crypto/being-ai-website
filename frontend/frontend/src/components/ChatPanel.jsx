@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   applyAgentFileActions,
+  getAutonomousAgentTask,
   planAgentFileActions,
   streamOllamaChat,
+  startAutonomousAgentTask,
+  stopAutonomousAgentTask,
 } from "../lib/api";
 
 export default function ChatPanel({ selectedProject, onFilesChanged }) {
@@ -22,17 +25,77 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
   const [contextStatus, setContextStatus] = useState("Workspace context off");
   const [contextFiles, setContextFiles] = useState([]);
   const [agentMode, setAgentMode] = useState(false);
+  const [autonomousMode, setAutonomousMode] = useState(false);
+  const [agentTask, setAgentTask] = useState(null);
   const [plannedActions, setPlannedActions] = useState([]);
   const [changeSummary, setChangeSummary] = useState(null);
   const [planMessage, setPlanMessage] = useState("");
   const [applying, setApplying] = useState(false);
   const messagesRef = useRef(null);
+  const taskPollRef = useRef(null);
 
   useEffect(() => {
     if (messagesRef.current) {
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
     }
   }, [messages, generating]);
+
+  useEffect(() => {
+    return () => {
+      if (taskPollRef.current) {
+        clearInterval(taskPollRef.current);
+      }
+    };
+  }, []);
+
+  function stopPollingTask() {
+    if (taskPollRef.current) {
+      clearInterval(taskPollRef.current);
+      taskPollRef.current = null;
+    }
+  }
+
+  function handleTaskUpdate(task, assistantId) {
+    setAgentTask(task);
+
+    if (task.final_plan) {
+      setPlanMessage(task.final_plan.message);
+      setPlannedActions(task.final_plan.previews || []);
+      setChangeSummary(task.final_plan.change_summary || null);
+    }
+
+    if (["review", "failed", "stopped"].includes(task.status)) {
+      stopPollingTask();
+      setGenerating(false);
+      setMessages((currentMessages) =>
+        currentMessages.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                content:
+                  task.status === "review"
+                    ? "Autonomous task complete. Review the final changes below before applying."
+                    : task.error || `Autonomous task ${task.status}.`,
+              }
+            : message
+        )
+      );
+    }
+  }
+
+  function pollTask(taskId, assistantId) {
+    stopPollingTask();
+    taskPollRef.current = setInterval(async () => {
+      try {
+        const task = await getAutonomousAgentTask(taskId);
+        handleTaskUpdate(task, assistantId);
+      } catch (pollError) {
+        stopPollingTask();
+        setGenerating(false);
+        setError(pollError.message);
+      }
+    }, 1000);
+  }
 
   async function sendMessage(event) {
     event.preventDefault();
@@ -65,6 +128,7 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
     setPlannedActions([]);
     setChangeSummary(null);
     setPlanMessage("");
+    setAgentTask(null);
     setContextFiles([]);
     setContextStatus(
       useWorkspaceContext
@@ -75,6 +139,28 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
 
     try {
       if (agentMode) {
+        if (autonomousMode) {
+          const task = await startAutonomousAgentTask({
+            projectName: selectedProject,
+            prompt,
+            model: model.trim(),
+            maxIterations: 3,
+          });
+          setAgentTask(task);
+          setMessages((currentMessages) =>
+            currentMessages.map((message) =>
+              message.id === assistantId
+                ? {
+                    ...message,
+                    content: "Autonomous agent started. Follow the activity panel for progress.",
+                  }
+                : message
+            )
+          );
+          pollTask(task.id, assistantId);
+          return;
+        }
+
         const plan = await planAgentFileActions({
           projectName: selectedProject,
           prompt,
@@ -210,6 +296,19 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
     ]);
   }
 
+  async function stopAutonomousTask() {
+    if (!agentTask) return;
+
+    try {
+      const stoppedTask = await stopAutonomousAgentTask(agentTask.id);
+      handleTaskUpdate(stoppedTask, "");
+      stopPollingTask();
+      setGenerating(false);
+    } catch (stopError) {
+      setError(stopError.message);
+    }
+  }
+
   const hasInvalidPlannedActions = plannedActions.some((action) => !action.valid);
 
   return (
@@ -281,6 +380,101 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
           </div>
         ))}
       </div>
+
+      {agentTask && (
+        <div
+          style={{
+            borderTop: "1px solid rgba(255,255,255,0.1)",
+            maxHeight: "260px",
+            overflow: "auto",
+            padding: "14px",
+          }}
+        >
+          <div
+            style={{
+              alignItems: "center",
+              display: "flex",
+              justifyContent: "space-between",
+              gap: "10px",
+              marginBottom: "10px",
+            }}
+          >
+            <strong style={{ color: "#00ffff" }}>Agent Activity</strong>
+            <button
+              disabled={!["queued", "running", "stopping"].includes(agentTask.status)}
+              onClick={stopAutonomousTask}
+              style={{
+                background: "rgba(255,133,133,0.18)",
+                border: "1px solid rgba(255,133,133,0.45)",
+                borderRadius: "999px",
+                color: "#ff8585",
+                cursor: !["queued", "running", "stopping"].includes(agentTask.status)
+                  ? "not-allowed"
+                  : "pointer",
+                padding: "8px 12px",
+              }}
+              type="button"
+            >
+              Stop Agent
+            </button>
+          </div>
+
+          <div
+            style={{
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "12px",
+              color: "rgba(255,255,255,0.78)",
+              marginBottom: "12px",
+              padding: "10px",
+            }}
+          >
+            <div>Status: {agentTask.status}</div>
+            <div>Current step: {agentTask.current_step}</div>
+            <div>
+              Iteration: {agentTask.iteration} / {agentTask.max_iterations}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: "12px" }}>
+            <div style={{ color: "rgba(255,255,255,0.62)", fontSize: "0.78rem", marginBottom: "6px" }}>
+              Timeline
+            </div>
+            {(agentTask.events || []).map((event, index) => (
+              <div
+                key={`${event.timestamp}-${index}`}
+                style={{
+                  borderLeft: "2px solid #00ffff",
+                  color: "rgba(255,255,255,0.8)",
+                  fontSize: "0.82rem",
+                  marginBottom: "8px",
+                  paddingLeft: "10px",
+                }}
+              >
+                {event.message}
+              </div>
+            ))}
+          </div>
+
+          <pre
+            style={{
+              background: "rgba(0,0,0,0.42)",
+              borderRadius: "10px",
+              color: "rgba(255,255,255,0.82)",
+              fontSize: "0.78rem",
+              margin: 0,
+              maxHeight: "120px",
+              overflow: "auto",
+              padding: "10px",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {(agentTask.logs || []).length
+              ? (agentTask.logs || []).map((log) => `[${log.stream}] ${log.message}`).join("")
+              : "Waiting for execution logs..."}
+          </pre>
+        </div>
+      )}
 
       {plannedActions.length > 0 && (
         <div
@@ -485,6 +679,9 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
               if (event.target.checked) {
                 setUseWorkspaceContext(true);
                 setContextStatus("Workspace context ready");
+              } else {
+                setAutonomousMode(false);
+                setAgentTask(null);
               }
               setPlannedActions([]);
               setChangeSummary(null);
@@ -494,6 +691,32 @@ export default function ChatPanel({ selectedProject, onFilesChanged }) {
           />
           Agent Mode
         </label>
+
+        {agentMode && (
+          <label
+            style={{
+              alignItems: "center",
+              color: selectedProject ? "white" : "rgba(255,255,255,0.45)",
+              display: "flex",
+              gap: "10px",
+              fontSize: "0.9rem",
+            }}
+          >
+            <input
+              checked={autonomousMode}
+              disabled={!selectedProject || generating || applying}
+              onChange={(event) => {
+                setAutonomousMode(event.target.checked);
+                setAgentTask(null);
+                setPlannedActions([]);
+                setChangeSummary(null);
+                setPlanMessage("");
+              }}
+              type="checkbox"
+            />
+            Autonomous Loop
+          </label>
+        )}
 
         <label
           style={{
