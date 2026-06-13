@@ -28,3 +28,17 @@ class OllamaChatRequest(BaseModel):
     project_name: str | None = None
     use_workspace_context: bool = False
     max_context_chars: int | None = None
+
+
+class AgentFileActionPlanRequest(BaseModel):
+    project_name: str
+    prompt: str
+    model: str | None = None
+    use_workspace_context: bool = True
+    max_context_chars: int | None = None
+
+
+class AgentFileActionApplyRequest(BaseModel):
+    project_name: str
+    actions: list[dict]
+    prompt: str | None = None

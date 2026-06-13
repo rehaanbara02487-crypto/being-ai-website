@@ -102,3 +102,35 @@ def stream_chat_response(
                 "model": selected_model,
             }
             return
+
+
+def generate_text_response(
+    prompt: str,
+    model: str | None = None,
+    system_prompt: str | None = None,
+    repository_context: str | None = None,
+) -> str:
+    settings = get_settings()
+    selected_model = get_ollama_model(model)
+
+    try:
+        response = requests.post(
+            f"{settings.ollama_base_url.rstrip('/')}/api/generate",
+            json={
+                "model": selected_model,
+                "prompt": build_coding_prompt(prompt, system_prompt, repository_context),
+                "stream": False,
+            },
+            timeout=(3, 180),
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        raise OllamaOfflineError(
+            "Ollama is offline or unreachable. Start Ollama and make sure the model is pulled."
+        ) from exc
+
+    payload = response.json()
+    if payload.get("error"):
+        raise RuntimeError(payload["error"])
+
+    return payload.get("response", "")

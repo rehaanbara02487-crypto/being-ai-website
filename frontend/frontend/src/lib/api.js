@@ -151,3 +151,31 @@ export async function streamOllamaChat({
     onEvent(JSON.parse(buffer.slice(6)));
   }
 }
+
+export function planAgentFileActions({
+  projectName,
+  prompt,
+  model,
+  useWorkspaceContext,
+}) {
+  return request("/agent/file-actions/plan", {
+    method: "POST",
+    body: JSON.stringify({
+      project_name: projectName,
+      prompt,
+      model: model || undefined,
+      use_workspace_context: Boolean(useWorkspaceContext),
+    }),
+  });
+}
+
+export function applyAgentFileActions({ projectName, actions, prompt }) {
+  return request("/agent/file-actions/apply", {
+    method: "POST",
+    body: JSON.stringify({
+      project_name: projectName,
+      actions,
+      prompt,
+    }),
+  });
+}

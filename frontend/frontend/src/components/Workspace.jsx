@@ -804,7 +804,14 @@ export default function Workspace({ onClose }) {
           </div>
         </main>
 
-        <ChatPanel selectedProject={selectedProject} />
+        <ChatPanel
+          selectedProject={selectedProject}
+          onFilesChanged={() => {
+            if (selectedProject) {
+              refreshProjectFiles(selectedProject, "Workspace updated by AI agent.");
+            }
+          }}
+        />
       </div>
     </div>
   );

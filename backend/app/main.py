@@ -13,10 +13,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import requests
 
+from app.agent_file_actions import plan_file_actions
+from app.file_action_tools import FileActionError, apply_actions
 from app.ollama_service import OllamaOfflineError, stream_chat_response
 from app.config import get_settings
 from app.repository_indexer import build_repository_context
 from app.schemas import (
+    AgentFileActionApplyRequest,
+    AgentFileActionPlanRequest,
     CreateFileRequest,
     CreateFolderRequest,
     FileRequest,
@@ -139,6 +143,16 @@ def get_run_info(project_name: str):
     }
 
 
+def get_repository_context_for_request(project_name: str, prompt: str, max_context_chars: int | None):
+    project_dir = get_project_dir(project_name)
+    context_limit = max_context_chars or get_settings().ollama_context_char_limit
+    return build_repository_context(
+        project_dir,
+        prompt,
+        max_chars=context_limit,
+    )
+
+
 class PromptRequest(BaseModel):
     prompt: str
 
@@ -173,12 +187,10 @@ async def ollama_chat_stream(request: OllamaChatRequest):
         if not request.project_name:
             raise HTTPException(status_code=400, detail="Project name is required for workspace context")
 
-        project_dir = get_project_dir(request.project_name)
-        max_context_chars = request.max_context_chars or get_settings().ollama_context_char_limit
-        context_payload = build_repository_context(
-            project_dir,
+        context_payload = get_repository_context_for_request(
+            request.project_name,
             request.prompt,
-            max_chars=max_context_chars,
+            request.max_context_chars,
         )
         repository_context = context_payload["context"]
 
@@ -203,6 +215,61 @@ async def ollama_chat_stream(request: OllamaChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/agent/file-actions/plan")
+async def plan_agent_file_actions(request: AgentFileActionPlanRequest):
+    if not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    project_dir = get_project_dir(request.project_name)
+    context_payload = None
+    repository_context = None
+
+    if request.use_workspace_context:
+        context_payload = get_repository_context_for_request(
+            request.project_name,
+            request.prompt,
+            request.max_context_chars,
+        )
+        repository_context = context_payload["context"]
+
+    try:
+        plan = plan_file_actions(
+            project_dir,
+            request.prompt,
+            repository_context=repository_context,
+            model=request.model,
+        )
+    except OllamaOfflineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid tool plan from Ollama: {exc}") from exc
+
+    return {
+        **plan,
+        "context": None if not context_payload else {
+            key: value
+            for key, value in context_payload.items()
+            if key != "context"
+        },
+    }
+
+
+@app.post("/agent/file-actions/apply")
+async def apply_agent_file_actions(request: AgentFileActionApplyRequest):
+    project_dir = get_project_dir(request.project_name)
+
+    try:
+        results = apply_actions(project_dir, request.actions)
+    except FileActionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "status": "applied",
+        "results": results,
+        "message": f"Applied {len(results)} file operation(s).",
+    }
 
 
 @app.post("/generate")
