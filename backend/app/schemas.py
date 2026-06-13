@@ -25,3 +25,6 @@ class OllamaChatRequest(BaseModel):
     prompt: str
     model: str | None = None
     system_prompt: str | None = None
+    project_name: str | None = None
+    use_workspace_context: bool = False
+    max_context_chars: int | None = None

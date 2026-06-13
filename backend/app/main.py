@@ -14,6 +14,8 @@ from pydantic import BaseModel
 import requests
 
 from app.ollama_service import OllamaOfflineError, stream_chat_response
+from app.config import get_settings
+from app.repository_indexer import build_repository_context
 from app.schemas import (
     CreateFileRequest,
     CreateFolderRequest,
@@ -164,12 +166,37 @@ async def ollama_chat_stream(request: OllamaChatRequest):
     if not request.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt is required")
 
+    repository_context = None
+    context_payload = None
+
+    if request.use_workspace_context:
+        if not request.project_name:
+            raise HTTPException(status_code=400, detail="Project name is required for workspace context")
+
+        project_dir = get_project_dir(request.project_name)
+        max_context_chars = request.max_context_chars or get_settings().ollama_context_char_limit
+        context_payload = build_repository_context(
+            project_dir,
+            request.prompt,
+            max_chars=max_context_chars,
+        )
+        repository_context = context_payload["context"]
+
     def event_stream():
+        if context_payload:
+            public_context_payload = {
+                key: value
+                for key, value in context_payload.items()
+                if key != "context"
+            }
+            yield f"data: {json.dumps({'type': 'context', **public_context_payload})}\n\n"
+
         try:
             for payload in stream_chat_response(
                 request.prompt,
                 model=request.model,
                 system_prompt=request.system_prompt,
+                repository_context=repository_context,
             ):
                 yield f"data: {json.dumps(payload)}\n\n"
         except OllamaOfflineError as exc:

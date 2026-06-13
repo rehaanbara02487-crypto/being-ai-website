@@ -98,7 +98,13 @@ export function getProjectRunStreamUrl(projectName) {
   return `${API_BASE_URL}/projects/${encodeURIComponent(projectName)}/run/stream`;
 }
 
-export async function streamOllamaChat({ prompt, model, onEvent }) {
+export async function streamOllamaChat({
+  prompt,
+  model,
+  projectName,
+  useWorkspaceContext,
+  onEvent,
+}) {
   const response = await fetch(`${API_BASE_URL}/ollama/chat/stream`, {
     method: "POST",
     headers: {
@@ -107,6 +113,8 @@ export async function streamOllamaChat({ prompt, model, onEvent }) {
     body: JSON.stringify({
       prompt,
       model: model || undefined,
+      project_name: projectName || undefined,
+      use_workspace_context: Boolean(useWorkspaceContext),
     }),
   });
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { streamOllamaChat } from "../lib/api";
 
-export default function ChatPanel() {
+export default function ChatPanel({ selectedProject }) {
   const [messages, setMessages] = useState([
     {
       id: "welcome",
@@ -14,6 +14,9 @@ export default function ChatPanel() {
   const [model, setModel] = useState("");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
+  const [useWorkspaceContext, setUseWorkspaceContext] = useState(false);
+  const [contextStatus, setContextStatus] = useState("Workspace context off");
+  const [contextFiles, setContextFiles] = useState([]);
   const messagesRef = useRef(null);
 
   useEffect(() => {
@@ -46,13 +49,26 @@ export default function ChatPanel() {
     ]);
     setInput("");
     setError("");
+    setContextFiles([]);
+    setContextStatus(
+      useWorkspaceContext
+        ? `Indexing ${selectedProject || "workspace"}...`
+        : "Workspace context off"
+    );
     setGenerating(true);
 
     try {
       await streamOllamaChat({
         prompt,
         model: model.trim(),
+        projectName: selectedProject,
+        useWorkspaceContext: useWorkspaceContext && Boolean(selectedProject),
         onEvent: (payload) => {
+          if (payload.type === "context") {
+            setContextStatus(payload.status);
+            setContextFiles(payload.files || []);
+          }
+
           if (payload.type === "token") {
             setMessages((currentMessages) =>
               currentMessages.map((message) =>
@@ -182,6 +198,60 @@ export default function ChatPanel() {
           <div style={{ color: "#ff8585", fontSize: "0.9rem" }}>
             {error}
           </div>
+        )}
+
+        <label
+          style={{
+            alignItems: "center",
+            color: selectedProject ? "white" : "rgba(255,255,255,0.45)",
+            display: "flex",
+            gap: "10px",
+            fontSize: "0.9rem",
+          }}
+        >
+          <input
+            checked={useWorkspaceContext}
+            disabled={!selectedProject || generating}
+            onChange={(event) => {
+              setUseWorkspaceContext(event.target.checked);
+              setContextFiles([]);
+              setContextStatus(
+                event.target.checked
+                  ? "Workspace context ready"
+                  : "Workspace context off"
+              );
+            }}
+            type="checkbox"
+          />
+          Use Workspace Context
+        </label>
+
+        <div
+          style={{
+            color: "rgba(255,255,255,0.62)",
+            fontSize: "0.82rem",
+          }}
+        >
+          {contextStatus}
+          {selectedProject ? ` (${selectedProject})` : ""}
+        </div>
+
+        {contextFiles.length > 0 && (
+          <details
+            style={{
+              color: "rgba(255,255,255,0.72)",
+              fontSize: "0.82rem",
+            }}
+          >
+            <summary>Files sent to AI ({contextFiles.length})</summary>
+            <ul style={{ margin: "8px 0 0", paddingLeft: "18px" }}>
+              {contextFiles.map((file) => (
+                <li key={file.path}>
+                  {file.path}
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
 
         <input

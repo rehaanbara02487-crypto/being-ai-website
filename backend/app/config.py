@@ -35,6 +35,10 @@ class Settings(BaseSettings):
         default="qwen2.5-coder:7b",
         validation_alias="OLLAMA_MODEL",
     )
+    ollama_context_char_limit: int = Field(
+        default=20000,
+        validation_alias="OLLAMA_CONTEXT_CHAR_LIMIT",
+    )
     sqlalchemy_echo: bool = Field(default=False, validation_alias="SQLALCHEMY_ECHO")
 
     @property

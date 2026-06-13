@@ -804,7 +804,7 @@ export default function Workspace({ onClose }) {
           </div>
         </main>
 
-        <ChatPanel />
+        <ChatPanel selectedProject={selectedProject} />
       </div>
     </div>
   );

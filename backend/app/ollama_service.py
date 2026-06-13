@@ -17,7 +17,11 @@ def get_ollama_model(requested_model: str | None = None) -> str:
     return requested_model or settings.ollama_model
 
 
-def build_coding_prompt(prompt: str, system_prompt: str | None = None) -> str:
+def build_coding_prompt(
+    prompt: str,
+    system_prompt: str | None = None,
+    repository_context: str | None = None,
+) -> str:
     default_system_prompt = """
 You are BEING AI, a senior AI software engineer.
 Return complete, practical code when the user asks for code.
@@ -25,13 +29,24 @@ Keep answers concise and implementation-focused.
 Do not use markdown fences unless the user asks for them.
 """.strip()
 
-    return f"{system_prompt or default_system_prompt}\n\nUser request:\n{prompt}"
+    context_section = ""
+    if repository_context:
+        context_section = f"""
+
+Workspace context:
+{repository_context}
+
+Use the workspace context to answer project-specific questions. Cite file paths when relevant.
+""".rstrip()
+
+    return f"{system_prompt or default_system_prompt}{context_section}\n\nUser request:\n{prompt}"
 
 
 def stream_chat_response(
     prompt: str,
     model: str | None = None,
     system_prompt: str | None = None,
+    repository_context: str | None = None,
 ) -> Iterator[dict]:
     settings = get_settings()
     selected_model = get_ollama_model(model)
@@ -41,7 +56,7 @@ def stream_chat_response(
             f"{settings.ollama_base_url.rstrip('/')}/api/generate",
             json={
                 "model": selected_model,
-                "prompt": build_coding_prompt(prompt, system_prompt),
+                "prompt": build_coding_prompt(prompt, system_prompt, repository_context),
                 "stream": True,
             },
             stream=True,
