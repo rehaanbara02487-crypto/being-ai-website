@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import Contact from "./components/contact";
 import Services from "./components/services";
@@ -9,12 +9,36 @@ import Footer from "./components/footer";
 import Workspace from "./components/Workspace";
 
 export default function App() {
-  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [currentPath, setCurrentPath] = useState(window.location.pathname);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  const navigateToWorkspace = () => {
+    window.history.pushState({}, "", "/workspace");
+    setCurrentPath("/workspace");
+  };
+
+  const closeWorkspace = () => {
+    window.history.pushState({}, "", "/");
+    setCurrentPath("/");
+  };
+
+  if (currentPath === "/workspace") {
+    return <Workspace onClose={closeWorkspace} />;
+  }
 
   return (
     <>
-      {workspaceOpen && <Workspace onClose={() => setWorkspaceOpen(false)} />}
-
       {/* HERO SECTION */}
       <div
         style={{
@@ -137,7 +161,7 @@ export default function App() {
             }}
           >
             <button
-              onClick={() => setWorkspaceOpen(true)}
+              onClick={navigateToWorkspace}
               style={{
                 background: "#00ffff",
                 color: "#000",
