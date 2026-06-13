@@ -23,8 +23,9 @@ export default function App() {
     };
   }, []);
 
-  const navigateToWorkspace = () => {
-    window.location.assign("/workspace");
+  const navigateToWorkspace = (event) => {
+    event.preventDefault();
+    window.location.href = "/workspace";
   };
 
   const closeWorkspace = () => {
@@ -159,25 +160,27 @@ export default function App() {
               justifyContent: "center",
             }}
           >
-            <button
-              type="button"
+            <a
+              href="/workspace"
               onClick={navigateToWorkspace}
               style={{
                 background: "#00ffff",
                 color: "#000",
                 border: "none",
+                display: "inline-block",
                 padding: "18px 40px",
                 borderRadius: "50px",
                 fontWeight: "bold",
                 fontSize: "1rem",
                 cursor: "pointer",
                 position: "relative",
+                textDecoration: "none",
                 zIndex: 500,
                 boxShadow: "0 0 25px rgba(0,255,255,0.4)",
               }}
             >
               Launch Workspace
-            </button>
+            </a>
 
             <button
               style={{
