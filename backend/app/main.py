@@ -1,11 +1,15 @@
 from pathlib import Path
+import asyncio
 import json 
+import sys
 import shutil
 import subprocess
+import threading
 
 from app.project_builder import build_project
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import requests
 
@@ -22,6 +26,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ],
@@ -32,6 +38,8 @@ app.add_middleware(
 
 
 WORKSPACE_ROOT = Path("data/workspaces")
+RUNNING_PROJECTS = {}
+RUNNING_PROJECTS_LOCK = threading.Lock()
 
 
 def get_project_dir(project_name: str) -> Path:
@@ -60,6 +68,66 @@ def resolve_project_path(project_name: str, relative_path: str) -> Path:
         raise HTTPException(status_code=400, detail="Path escapes project workspace")
 
     return target_path
+
+
+def get_project_entrypoint(project_dir: Path) -> Path:
+    for filename in ("main.py", "app.py"):
+        entrypoint = project_dir / filename
+        if entrypoint.is_file():
+            return entrypoint
+
+    raise HTTPException(status_code=400, detail="Project must contain main.py or app.py")
+
+
+def append_run_log(run_info: dict, stream: str, message: str):
+    with RUNNING_PROJECTS_LOCK:
+        run_info["logs"].append({
+            "stream": stream,
+            "message": message,
+        })
+
+
+def read_process_stream(run_info: dict, stream_name: str, stream):
+    try:
+        for line in iter(stream.readline, ""):
+            if not line:
+                break
+            append_run_log(run_info, stream_name, line)
+    finally:
+        stream.close()
+
+
+def monitor_process(project_name: str, run_info: dict):
+    return_code = run_info["process"].wait()
+
+    with RUNNING_PROJECTS_LOCK:
+        run_info["running"] = False
+        run_info["returncode"] = return_code
+        run_info["logs"].append({
+            "stream": "system",
+            "message": f"Process exited with code {return_code}\n",
+            "returncode": return_code,
+        })
+
+
+def get_run_info(project_name: str):
+    with RUNNING_PROJECTS_LOCK:
+        run_info = RUNNING_PROJECTS.get(project_name)
+
+    if not run_info:
+        return {
+            "project": project_name,
+            "running": False,
+            "returncode": None,
+            "entrypoint": None,
+        }
+
+    return {
+        "project": project_name,
+        "running": run_info["running"],
+        "returncode": run_info["returncode"],
+        "entrypoint": run_info["entrypoint"],
+    }
 
 
 class PromptRequest(BaseModel):
@@ -621,6 +689,145 @@ Return the FULL modified file.
     "status": "success",
     "updated_files": updated_files
     }
+
+
+@app.post("/projects/{project_name}/run")
+async def start_project_run(project_name: str):
+    project_dir = get_project_dir(project_name)
+    entrypoint = get_project_entrypoint(project_dir)
+
+    with RUNNING_PROJECTS_LOCK:
+        existing_run = RUNNING_PROJECTS.get(project_name)
+        if existing_run and existing_run["running"]:
+            raise HTTPException(status_code=409, detail="Project is already running")
+
+    process = subprocess.Popen(
+        [sys.executable, "-u", entrypoint.name],
+        cwd=str(project_dir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        bufsize=1,
+    )
+
+    run_info = {
+        "process": process,
+        "running": True,
+        "returncode": None,
+        "entrypoint": entrypoint.name,
+        "logs": [
+            {
+                "stream": "system",
+                "message": f"Started {entrypoint.name}\n",
+            }
+        ],
+    }
+
+    with RUNNING_PROJECTS_LOCK:
+        RUNNING_PROJECTS[project_name] = run_info
+
+    threading.Thread(
+        target=read_process_stream,
+        args=(run_info, "stdout", process.stdout),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=read_process_stream,
+        args=(run_info, "stderr", process.stderr),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=monitor_process,
+        args=(project_name, run_info),
+        daemon=True,
+    ).start()
+
+    return get_run_info(project_name)
+
+
+@app.get("/projects/{project_name}/run")
+async def project_run_status(project_name: str):
+    get_project_dir(project_name)
+    return get_run_info(project_name)
+
+
+@app.get("/projects/{project_name}/run/stream")
+async def stream_project_run(project_name: str):
+    get_project_dir(project_name)
+
+    async def event_stream():
+        index = 0
+
+        while True:
+            with RUNNING_PROJECTS_LOCK:
+                run_info = RUNNING_PROJECTS.get(project_name)
+
+                if not run_info:
+                    logs = [{
+                        "stream": "system",
+                        "message": "Project is not running\n",
+                    }]
+                    running = False
+                    return_code = None
+                    missing_run = True
+                else:
+                    logs = list(run_info["logs"])
+                    running = run_info["running"]
+                    return_code = run_info["returncode"]
+                    missing_run = False
+
+            if missing_run:
+                payload = {
+                    **logs[0],
+                    "running": running,
+                    "returncode": return_code,
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                break
+
+            while index < len(logs):
+                payload = {
+                    **logs[index],
+                    "running": running,
+                    "returncode": return_code,
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                index += 1
+
+            if not running:
+                break
+
+            await asyncio.sleep(0.2)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/projects/{project_name}/stop")
+async def stop_project_run(project_name: str):
+    get_project_dir(project_name)
+
+    with RUNNING_PROJECTS_LOCK:
+        run_info = RUNNING_PROJECTS.get(project_name)
+
+    if not run_info or not run_info["running"]:
+        return get_run_info(project_name)
+
+    process = run_info["process"]
+    process.terminate()
+
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+    append_run_log(run_info, "system", "Stop requested\n")
+
+    return get_run_info(project_name)
+
+
 @app.post("/run-project")
 async def run_project(project_name: str):
 

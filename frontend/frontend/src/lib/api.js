@@ -77,3 +77,23 @@ export function deleteProjectPath(projectName, path) {
     method: "DELETE",
   });
 }
+
+export function startProjectRun(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/run`, {
+    method: "POST",
+  });
+}
+
+export function getProjectRunStatus(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/run`);
+}
+
+export function stopProjectRun(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/stop`, {
+    method: "POST",
+  });
+}
+
+export function getProjectRunStreamUrl(projectName) {
+  return `${API_BASE_URL}/projects/${encodeURIComponent(projectName)}/run/stream`;
+}

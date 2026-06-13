@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import {
   createProjectFile,
@@ -6,9 +6,13 @@ import {
   deleteProjectPath,
   getProject,
   getProjectFile,
+  getProjectRunStatus,
+  getProjectRunStreamUrl,
   listProjects,
   renameProjectPath,
   saveProjectFile,
+  startProjectRun,
+  stopProjectRun,
 } from "../lib/api";
 
 const buttonBase = {
@@ -55,6 +59,60 @@ export default function Workspace({ onClose }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("Loading projects...");
   const [error, setError] = useState("");
+  const [terminalLogs, setTerminalLogs] = useState([]);
+  const [projectRunning, setProjectRunning] = useState(false);
+  const [runStatus, setRunStatus] = useState("Idle");
+  const eventSourceRef = useRef(null);
+  const terminalRef = useRef(null);
+
+  function closeRunStream() {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  }
+
+  function appendTerminalLog(stream, message) {
+    setTerminalLogs((logs) => [
+      ...logs,
+      {
+        stream,
+        message,
+      },
+    ]);
+  }
+
+  function openRunStream(projectName) {
+    closeRunStream();
+
+    const eventSource = new EventSource(getProjectRunStreamUrl(projectName));
+    eventSourceRef.current = eventSource;
+
+    eventSource.onmessage = (event) => {
+      const payload = JSON.parse(event.data);
+
+      appendTerminalLog(payload.stream, payload.message);
+      setProjectRunning(payload.running);
+
+      if (payload.running) {
+        setRunStatus("Running");
+      } else {
+        setRunStatus(
+          payload.returncode === null
+            ? "Idle"
+            : `Exited (${payload.returncode})`
+        );
+        closeRunStream();
+      }
+    };
+
+    eventSource.onerror = () => {
+      appendTerminalLog("system", "Log stream disconnected\n");
+      setProjectRunning(false);
+      setRunStatus("Disconnected");
+      closeRunStream();
+    };
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +145,18 @@ export default function Workspace({ onClose }) {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      closeRunStream();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [terminalLogs]);
+
   async function refreshProjectFiles(projectName, successMessage) {
     const data = await getProject(projectName);
     const projectFiles = data.files || [];
@@ -104,6 +174,25 @@ export default function Workspace({ onClose }) {
     return data;
   }
 
+  async function refreshRunStatus(projectName) {
+    try {
+      const status = await getProjectRunStatus(projectName);
+
+      setProjectRunning(status.running);
+      setRunStatus(status.running ? "Running" : "Idle");
+
+      if (status.running) {
+        openRunStream(projectName);
+      } else {
+        closeRunStream();
+      }
+    } catch (statusError) {
+      setProjectRunning(false);
+      setRunStatus("Unavailable");
+      appendTerminalLog("system", `${statusError.message}\n`);
+    }
+  }
+
   async function openProject(projectName) {
     setSelectedProject(projectName);
     setSelectedFile("");
@@ -112,12 +201,17 @@ export default function Workspace({ onClose }) {
     setFolders([]);
     setContent("");
     setIsDirty(false);
+    setTerminalLogs([]);
+    setProjectRunning(false);
+    setRunStatus("Idle");
+    closeRunStream();
     setLoading(true);
     setError("");
     setMessage(`Loading ${projectName}...`);
 
     try {
       await refreshProjectFiles(projectName);
+      await refreshRunStatus(projectName);
     } catch (loadError) {
       setError(loadError.message);
       setMessage("Unable to load project files.");
@@ -165,6 +259,44 @@ export default function Workspace({ onClose }) {
       setMessage("Unable to save file.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function runProject() {
+    if (!selectedProject) return;
+
+    setError("");
+    setTerminalLogs([]);
+    setRunStatus("Starting");
+    appendTerminalLog("system", `Starting ${selectedProject}...\n`);
+
+    try {
+      const status = await startProjectRun(selectedProject);
+      setProjectRunning(status.running);
+      setRunStatus(status.running ? "Running" : "Idle");
+      openRunStream(selectedProject);
+    } catch (runError) {
+      setProjectRunning(false);
+      setRunStatus("Failed");
+      setError(runError.message);
+      appendTerminalLog("stderr", `${runError.message}\n`);
+    }
+  }
+
+  async function stopProject() {
+    if (!selectedProject) return;
+
+    setError("");
+    setRunStatus("Stopping");
+    appendTerminalLog("system", `Stopping ${selectedProject}...\n`);
+
+    try {
+      const status = await stopProjectRun(selectedProject);
+      setProjectRunning(status.running);
+      setRunStatus(status.running ? "Running" : "Stopped");
+    } catch (stopError) {
+      setError(stopError.message);
+      appendTerminalLog("stderr", `${stopError.message}\n`);
     }
   }
 
@@ -499,22 +631,74 @@ export default function Workspace({ onClose }) {
               </span>
             </div>
 
-            <button
-              disabled={!selectedFile || saving}
-              onClick={saveFile}
+            <div
               style={{
-                background:
-                  !selectedFile || saving ? "rgba(255,255,255,0.18)" : "#00ffff",
-                border: "none",
-                borderRadius: "999px",
-                color: "black",
-                cursor: !selectedFile || saving ? "not-allowed" : "pointer",
-                fontWeight: "bold",
-                padding: "12px 22px",
+                alignItems: "center",
+                display: "flex",
+                gap: "10px",
               }}
             >
-              {saving ? "Saving..." : "Save File"}
-            </button>
+              <span
+                style={{
+                  color: projectRunning ? "#00ffff" : "rgba(255,255,255,0.65)",
+                  fontSize: "0.9rem",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {runStatus}
+              </span>
+
+              {projectRunning ? (
+                <button
+                  disabled={!selectedProject}
+                  onClick={stopProject}
+                  style={{
+                    background: "#ff8585",
+                    border: "none",
+                    borderRadius: "999px",
+                    color: "black",
+                    cursor: !selectedProject ? "not-allowed" : "pointer",
+                    fontWeight: "bold",
+                    padding: "12px 22px",
+                  }}
+                >
+                  Stop
+                </button>
+              ) : (
+                <button
+                  disabled={!selectedProject}
+                  onClick={runProject}
+                  style={{
+                    background: !selectedProject ? "rgba(255,255,255,0.18)" : "#00ffff",
+                    border: "none",
+                    borderRadius: "999px",
+                    color: "black",
+                    cursor: !selectedProject ? "not-allowed" : "pointer",
+                    fontWeight: "bold",
+                    padding: "12px 22px",
+                  }}
+                >
+                  Run
+                </button>
+              )}
+
+              <button
+                disabled={!selectedFile || saving}
+                onClick={saveFile}
+                style={{
+                  background:
+                    !selectedFile || saving ? "rgba(255,255,255,0.18)" : "#00ffff",
+                  border: "none",
+                  borderRadius: "999px",
+                  color: "black",
+                  cursor: !selectedFile || saving ? "not-allowed" : "pointer",
+                  fontWeight: "bold",
+                  padding: "12px 22px",
+                }}
+              >
+                {saving ? "Saving..." : "Save File"}
+              </button>
+            </div>
           </div>
 
           <div style={{ flex: 1, minHeight: 0 }}>
@@ -549,6 +733,72 @@ export default function Workspace({ onClose }) {
                 {loading ? "Loading..." : "Select a file to open it in Monaco Editor."}
               </div>
             )}
+          </div>
+
+          <div
+            style={{
+              borderTop: "1px solid rgba(255,255,255,0.1)",
+              background: "rgba(0,0,0,0.48)",
+              height: "190px",
+              minHeight: "190px",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <div
+              style={{
+                alignItems: "center",
+                borderBottom: "1px solid rgba(255,255,255,0.08)",
+                color: "#00ffff",
+                display: "flex",
+                fontWeight: "bold",
+                justifyContent: "space-between",
+                padding: "10px 14px",
+              }}
+            >
+              <span>Terminal</span>
+              <span style={{ color: "rgba(255,255,255,0.65)", fontWeight: "normal" }}>
+                {selectedProject || "No project selected"}
+              </span>
+            </div>
+
+            <pre
+              ref={terminalRef}
+              style={{
+                color: "rgba(255,255,255,0.86)",
+                flex: 1,
+                fontFamily:
+                  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                fontSize: "0.9rem",
+                lineHeight: 1.5,
+                margin: 0,
+                overflow: "auto",
+                padding: "12px 14px",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {terminalLogs.length ? (
+                terminalLogs.map((log, index) => (
+                  <span
+                    key={`${index}-${log.stream}`}
+                    style={{
+                      color:
+                        log.stream === "stderr"
+                          ? "#ff8585"
+                          : log.stream === "system"
+                            ? "#00ffff"
+                            : "rgba(255,255,255,0.88)",
+                    }}
+                  >
+                    {log.message}
+                  </span>
+                ))
+              ) : (
+                <span style={{ color: "rgba(255,255,255,0.45)" }}>
+                  Run a project to see stdout and stderr here.
+                </span>
+              )}
+            </pre>
           </div>
         </main>
       </div>
