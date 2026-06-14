@@ -1,3 +1,5 @@
+import EmptyState from "./EmptyState";
+
 export default function FileExplorer({
   selectedProject,
   files,
@@ -13,9 +15,11 @@ export default function FileExplorer({
 }) {
   if (!selectedProject) {
     return (
-      <div style={{ color: "var(--ws-muted)", fontSize: "0.85rem", padding: "8px" }}>
-        Select a project to browse files.
-      </div>
+      <EmptyState
+        description="Choose a project from the list above, or ask BEING AI in Chat to build one."
+        icon="▤"
+        title="No project selected"
+      />
     );
   }
 
@@ -59,9 +63,13 @@ export default function FileExplorer({
       ))}
 
       {!files.length && !folders.length && (
-        <div style={{ color: "var(--ws-muted)", fontSize: "0.82rem", padding: "8px" }}>
-          Empty project. Create files or ask AI to scaffold one.
-        </div>
+        <EmptyState
+          actionLabel="Create File"
+          description="This project is empty. Add a file or use Agent Mode to scaffold."
+          icon="📄"
+          onAction={onCreateFile}
+          title="No files yet"
+        />
       )}
     </div>
   );

@@ -1,8 +1,10 @@
 import Editor from "@monaco-editor/react";
 
 import { languageForPath } from "../../lib/languageForPath";
+import EmptyState from "./EmptyState";
 
 export default function EditorPane({
+  selectedProject,
   selectedFile,
   content,
   isDirty,
@@ -52,10 +54,20 @@ export default function EditorPane({
             theme="vs-dark"
             value={content}
           />
+        ) : loading ? (
+          <div className="ws-editor-empty">Loading file...</div>
+        ) : !selectedProject ? (
+          <EmptyState
+            description="Open Explorer and select a project to browse and edit files."
+            icon="{ }"
+            title="No project selected"
+          />
         ) : (
-          <div className="ws-editor-empty">
-            {loading ? "Loading..." : "Select a file from Explorer to edit."}
-          </div>
+          <EmptyState
+            description="Pick a file from Explorer to open it in the editor."
+            icon="{ }"
+            title="No file open"
+          />
         )}
       </div>
     </div>

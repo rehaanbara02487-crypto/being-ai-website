@@ -3,13 +3,14 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import SourceControlPanel from "./SourceControlPanel";
 import EditorPane from "./workspace/EditorPane";
 import FileExplorer from "./workspace/FileExplorer";
+import IconTooltip from "./workspace/IconTooltip";
 import TerminalView from "./workspace/TerminalView";
 
 const ACTIVITY_ITEMS = [
-  { id: "explorer", icon: "▤", label: "Explorer" },
-  { id: "editor", icon: "{ }", label: "Editor" },
-  { id: "terminal", icon: "▣", label: "Terminal" },
-  { id: "git", icon: "⎇", label: "Source Control" },
+  { id: "explorer", icon: "▤", label: "Explorer", shortcut: "Ctrl+Shift+E" },
+  { id: "editor", icon: "{ }", label: "Editor", shortcut: "Ctrl+Shift+D" },
+  { id: "terminal", icon: "▣", label: "Terminal", shortcut: "Ctrl+`" },
+  { id: "git", icon: "⎇", label: "Source Control", shortcut: "Ctrl+Shift+G" },
 ];
 
 export default function ActivityPanel({
@@ -78,6 +79,7 @@ export default function ActivityPanel({
               onSave={onSave}
               saving={saving}
               selectedFile={selectedFile}
+              selectedProject={selectedProject}
             />
           </Panel>
         </Group>
@@ -98,6 +100,7 @@ export default function ActivityPanel({
               onSave={onSave}
               saving={saving}
               selectedFile={selectedFile}
+              selectedProject={selectedProject}
             />
           </Panel>
           <Separator className="ws-resize-handle ws-resize-handle-vertical" />
@@ -140,6 +143,7 @@ export default function ActivityPanel({
               onSave={onSave}
               saving={saving}
               selectedFile={selectedFile}
+              selectedProject={selectedProject}
             />
           </Panel>
         </Group>
@@ -157,24 +161,31 @@ export default function ActivityPanel({
         onSave={onSave}
         saving={saving}
         selectedFile={selectedFile}
+        selectedProject={selectedProject}
       />
     );
   }
 
   return (
     <div className="ws-activity-panel">
-      <div className="ws-activity-content">{renderMainContent()}</div>
-      <div className="ws-activity-bar">
+      <div className="ws-activity-content">
+        <div className="ws-activity-viewport" key={activeView}>
+          {renderMainContent()}
+        </div>
+      </div>
+      <div aria-label="Editor views" className="ws-activity-bar" role="toolbar">
         {ACTIVITY_ITEMS.map((item) => (
-          <button
-            key={item.id}
-            className={`ws-activity-btn ${activeView === item.id ? "active" : ""}`}
-            onClick={() => onViewChange(item.id)}
-            title={item.label}
-            type="button"
-          >
-            {item.icon}
-          </button>
+          <IconTooltip key={item.id} label={item.label} shortcut={item.shortcut}>
+            <button
+              aria-current={activeView === item.id ? "page" : undefined}
+              aria-label={item.label}
+              className={`ws-activity-btn ${activeView === item.id ? "active" : ""}`}
+              onClick={() => onViewChange(item.id)}
+              type="button"
+            >
+              {item.icon}
+            </button>
+          </IconTooltip>
         ))}
       </div>
     </div>

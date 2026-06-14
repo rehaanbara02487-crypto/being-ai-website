@@ -1,3 +1,5 @@
+import EmptyState from "./EmptyState";
+
 export default function TerminalView({
   terminalRef,
   terminalLogs,
@@ -30,7 +32,7 @@ export default function TerminalView({
         </div>
       </div>
 
-      <pre ref={terminalRef} className="ws-terminal">
+      <div ref={terminalRef} className="ws-terminal">
         {terminalLogs.length ? (
           terminalLogs.map((log, index) => (
             <span
@@ -47,12 +49,22 @@ export default function TerminalView({
               {log.message}
             </span>
           ))
+        ) : !selectedProject ? (
+          <EmptyState
+            description="Select a project, then click Run to stream stdout and stderr here."
+            icon="▣"
+            title="No terminal session"
+          />
         ) : (
-          <span className="ws-terminal-empty">
-            Run a project to see stdout and stderr here.
-          </span>
+          <EmptyState
+            actionLabel="Run Project"
+            description={`Ready to run ${selectedProject}. Output from your project will appear here.`}
+            icon="▣"
+            onAction={onRun}
+            title="Terminal idle"
+          />
         )}
-      </pre>
+      </div>
     </div>
   );
 }

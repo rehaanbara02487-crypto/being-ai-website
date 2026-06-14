@@ -1,26 +1,35 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 
 import ActivityPanel from "./ActivityPanel";
 import ChatWorkspace, { DEFAULT_WELCOME } from "./ChatWorkspace";
-import Sidebar from "./Sidebar";
+import Sidebar, { PRIMARY_NAV } from "./Sidebar";
 import { useChatSessions } from "../hooks/useChatSessions";
 import { useProjectRunner } from "../hooks/useProjectRunner";
+import { useSidebarState } from "../hooks/useSidebarState";
 import { useWorkspaceProject } from "../hooks/useWorkspaceProject";
 import "./workspace/workspace.css";
 
+const SIDEBAR_TO_ACTIVITY = {
+  explorer: "explorer",
+  terminal: "terminal",
+  git: "git",
+};
+
 export default function Workspace({ onClose }) {
-  const [sidebarView, setSidebarView] = useState("projects");
-  const [sidebarExpanded, setSidebarExpanded] = useState(false);
-  const [activityView, setActivityView] = useState("editor");
+  const [activityView, setActivityView] = useState("explorer");
   const [searchQuery, setSearchQuery] = useState("");
   const [agentTask, setAgentTask] = useState(null);
+  const [focusedNavIndex, setFocusedNavIndex] = useState(0);
+  const navButtonRefs = useRef([]);
   const [chatSettings, setChatSettings] = useState({
     agentMode: false,
     autonomousMode: false,
     useWorkspaceContext: false,
     model: "",
   });
+
+  const { sidebarView, setSidebarView, sidebarExpanded, setSidebarExpanded } = useSidebarState();
 
   const {
     sessions,
@@ -66,16 +75,17 @@ export default function Workspace({ onClose }) {
 
   const handleNewChat = useCallback(() => {
     createSession("New Chat");
-    setSidebarView("history");
+    setSidebarView("chat");
     setSidebarExpanded(true);
-  }, [createSession]);
+  }, [createSession, setSidebarExpanded, setSidebarView]);
 
   const handleSelectSession = useCallback(
     (sessionId) => {
       setActiveSessionId(sessionId);
-      setSidebarView("history");
+      setSidebarView("chat");
+      setSidebarExpanded(true);
     },
-    [setActiveSessionId]
+    [setActiveSessionId, setSidebarExpanded, setSidebarView]
   );
 
   const handleMessagesChange = useCallback(
@@ -94,13 +104,32 @@ export default function Workspace({ onClose }) {
     [activeSessionId, updateSession]
   );
 
-  const handleNavigate = useCallback((viewId) => {
-    setSidebarView(viewId);
-    setSidebarExpanded(true);
-    if (viewId === "new-chat") {
-      handleNewChat();
-    }
-  }, [handleNewChat]);
+  const handleActivityViewChange = useCallback(
+    (viewId) => {
+      setActivityView(viewId);
+      if (viewId === "explorer" || viewId === "terminal" || viewId === "git") {
+        setSidebarView(viewId);
+      }
+    },
+    [setSidebarView]
+  );
+
+  const handleSidebarNavigate = useCallback(
+    (viewId) => {
+      if (sidebarView === viewId && sidebarExpanded) {
+        setSidebarExpanded(false);
+        return;
+      }
+
+      setSidebarView(viewId);
+      setSidebarExpanded(true);
+
+      if (SIDEBAR_TO_ACTIVITY[viewId]) {
+        setActivityView(SIDEBAR_TO_ACTIVITY[viewId]);
+      }
+    },
+    [sidebarExpanded, sidebarView, setSidebarExpanded, setSidebarView]
+  );
 
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -114,7 +143,11 @@ export default function Workspace({ onClose }) {
           key: `project-${projectName}`,
           label: projectName,
           meta: "Project",
-          onSelect: () => project.openProject(projectName),
+          onSelect: () => {
+            project.openProject(projectName);
+            setActivityView("explorer");
+            setSidebarView("explorer");
+          },
         });
       }
     });
@@ -125,7 +158,10 @@ export default function Workspace({ onClose }) {
           key: `file-${filePath}`,
           label: filePath,
           meta: "File",
-          onSelect: () => project.openFile(filePath),
+          onSelect: () => {
+            setActivityView("editor");
+            project.openFile(filePath);
+          },
         });
       }
     });
@@ -142,13 +178,69 @@ export default function Workspace({ onClose }) {
     });
 
     return results.slice(0, 20);
-  }, [handleSelectSession, project.files, project.openFile, project.openProject, project.projects, searchQuery, sessions]);
+  }, [handleSelectSession, project, sessions, searchQuery, setSidebarView]);
+
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (event.target.matches("input, textarea, select") && !event.ctrlKey && !event.altKey) {
+        return;
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setSidebarExpanded((current) => !current);
+        return;
+      }
+
+      if (event.altKey && event.key === ",") {
+        event.preventDefault();
+        handleSidebarNavigate("settings");
+        return;
+      }
+
+      const navIndex = PRIMARY_NAV.findIndex((item) => {
+        const digit = item.shortcut.replace("Alt+", "");
+        return event.altKey && event.key === digit;
+      });
+
+      if (navIndex >= 0) {
+        event.preventDefault();
+        handleSidebarNavigate(PRIMARY_NAV[navIndex].id);
+        navButtonRefs.current[navIndex]?.focus();
+        return;
+      }
+
+      if (event.target.closest(".ws-sidebar-rail") && ["ArrowDown", "ArrowUp"].includes(event.key)) {
+        event.preventDefault();
+        const nextIndex =
+          event.key === "ArrowDown"
+            ? (focusedNavIndex + 1) % PRIMARY_NAV.length
+            : (focusedNavIndex - 1 + PRIMARY_NAV.length) % PRIMARY_NAV.length;
+        setFocusedNavIndex(nextIndex);
+        navButtonRefs.current[nextIndex]?.focus();
+        return;
+      }
+
+      if (event.target.closest(".ws-sidebar-rail") && event.key === "Enter") {
+        event.preventDefault();
+        handleSidebarNavigate(PRIMARY_NAV[focusedNavIndex].id);
+      }
+
+      if (event.key === "Escape" && sidebarExpanded) {
+        setSidebarExpanded(false);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [focusedNavIndex, handleSidebarNavigate, setSidebarExpanded, sidebarExpanded]);
 
   async function handleProjectCreated(projectName) {
     await project.reloadProjects();
     await project.openProject(projectName);
     setActivityView("explorer");
-    setSidebarView("projects");
+    setSidebarView("explorer");
+    setSidebarExpanded(true);
   }
 
   async function handleFilesChanged() {
@@ -186,17 +278,21 @@ export default function Workspace({ onClose }) {
     <div className="workspace-shell" style={{ inset: 0, position: "fixed", zIndex: 1000 }}>
       <header className="ws-header">
         <div className="ws-header-brand">
-          <strong>BEING AI</strong>
-          <span style={{ color: "var(--ws-muted)", fontSize: "0.82rem" }}>
+          <div aria-hidden="true" className="ws-logo-mark">
+            AI
+          </div>
+          <div className="ws-header-titles">
+            <strong>BEING AI</strong>
+            <span>Workspace IDE</span>
+          </div>
+          <span className="ws-header-project">
             {project.selectedProject || "No project selected"}
           </span>
         </div>
 
         <div className="ws-header-actions">
           <span
-            className={
-              runner.projectRunning ? "ws-status ws-status-running" : "ws-status"
-            }
+            className={runner.projectRunning ? "ws-status ws-status-running" : "ws-status"}
           >
             {runner.runStatus}
           </span>
@@ -215,6 +311,7 @@ export default function Workspace({ onClose }) {
               disabled={!project.selectedProject}
               onClick={() => {
                 setActivityView("terminal");
+                setSidebarView("terminal");
                 runner.runProject(project.selectedProject, project.setError);
               }}
               type="button"
@@ -229,97 +326,128 @@ export default function Workspace({ onClose }) {
       </header>
 
       <div className="ws-main-layout">
-        <Group
-          className="ws-panel-group"
-          defaultLayout={defaultLayout}
-          id="beingai-workspace-layout"
-          onLayoutChanged={onLayoutChanged}
-          orientation="horizontal"
-        >
-          <Panel className="ws-panel" defaultSize={18} id="sidebar" maxSize={28} minSize={12}>
-            <Sidebar
-              activeSessionId={activeSessionId}
-              activeView={sidebarView}
-              agentTask={agentTask}
-              chatSessions={sessions}
-              chatSettings={chatSettings}
-              expanded={sidebarExpanded}
-              onChatSettingsChange={handleChatSettingsChange}
-              onDeleteSession={deleteSession}
-              onNavigate={handleNavigate}
-              onNewChat={handleNewChat}
-              onSearchQueryChange={setSearchQuery}
-              onSelectProject={project.openProject}
-              onSelectSession={handleSelectSession}
-              onToggleExpanded={() => setSidebarExpanded((current) => !current)}
-              projects={project.projects}
-              searchQuery={searchQuery}
-              searchResults={searchResults}
-              selectedProject={project.selectedProject}
-              selectedProjectLabel={project.selectedProject}
-            />
-          </Panel>
+        <Sidebar
+          activeSessionId={activeSessionId}
+          activeView={sidebarView}
+          agentTask={agentTask}
+          chatSessions={sessions}
+          chatSettings={chatSettings}
+          expanded={sidebarExpanded}
+          files={project.files}
+          folders={project.folders}
+          navButtonRefs={navButtonRefs}
+          onChatSettingsChange={handleChatSettingsChange}
+          onCreateFile={project.createFile}
+          onCreateFolder={project.createFolder}
+          onDelete={project.deleteSelectedPath}
+          onDeleteSession={deleteSession}
+          onFocusNav={setFocusedNavIndex}
+          onNavigate={handleSidebarNavigate}
+          onNewChat={handleNewChat}
+          onOpenFile={(filePath) => {
+            setActivityView("editor");
+            project.openFile(filePath);
+          }}
+          onOpenGit={() => {
+            setActivityView("git");
+            setSidebarView("git");
+            setSidebarExpanded(true);
+          }}
+          onOpenTerminal={() => {
+            setActivityView("terminal");
+            setSidebarView("terminal");
+            setSidebarExpanded(true);
+          }}
+          onRename={project.renameSelectedPath}
+          onRunProject={() => {
+            setActivityView("terminal");
+            runner.runProject(project.selectedProject, project.setError);
+          }}
+          onSearchQueryChange={setSearchQuery}
+          onSelectFolder={project.setSelectedFolder}
+          onSelectProject={(projectName) => {
+            project.openProject(projectName);
+            setActivityView("explorer");
+          }}
+          onSelectSession={handleSelectSession}
+          onToggleExpanded={() => setSidebarExpanded((current) => !current)}
+          projectRunning={runner.projectRunning}
+          projects={project.projects}
+          runStatus={runner.runStatus}
+          searchQuery={searchQuery}
+          searchResults={searchResults}
+          selectedFile={project.selectedFile}
+          selectedFolder={project.selectedFolder}
+          selectedProject={project.selectedProject}
+        />
 
-          <Separator className="ws-resize-handle ws-resize-handle-horizontal" />
+        <div className="ws-workspace-body">
+          <Group
+            className="ws-panel-group"
+            defaultLayout={defaultLayout}
+            id="beingai-workspace-layout"
+            onLayoutChanged={onLayoutChanged}
+            orientation="horizontal"
+          >
+            <Panel className="ws-panel" defaultSize={58} id="chat" minSize={35}>
+              <ChatWorkspace
+                key={chatSessionKey}
+                chatSettings={chatSettings}
+                initialMessages={sessionMessages}
+                onAgentTaskChange={setAgentTask}
+                onChatSettingsChange={handleChatSettingsChange}
+                onFilesChanged={handleFilesChanged}
+                onMessagesChange={handleMessagesChange}
+                onOpenFile={handleOpenFileFromChat}
+                onProjectCreated={handleProjectCreated}
+                onSessionTitleChange={handleSessionTitleChange}
+                selectedProject={project.selectedProject}
+                sessionId={chatSessionKey}
+              />
+            </Panel>
 
-          <Panel className="ws-panel" defaultSize={52} id="chat" minSize={35}>
-            <ChatWorkspace
-              key={chatSessionKey}
-              chatSettings={chatSettings}
-              initialMessages={sessionMessages}
-              onAgentTaskChange={setAgentTask}
-              onChatSettingsChange={handleChatSettingsChange}
-              onFilesChanged={handleFilesChanged}
-              onMessagesChange={handleMessagesChange}
-              onOpenFile={handleOpenFileFromChat}
-              onProjectCreated={handleProjectCreated}
-              onSessionTitleChange={handleSessionTitleChange}
-              selectedProject={project.selectedProject}
-              sessionId={chatSessionKey}
-            />
-          </Panel>
+            <Separator className="ws-resize-handle ws-resize-handle-horizontal" />
 
-          <Separator className="ws-resize-handle ws-resize-handle-horizontal" />
-
-          <Panel className="ws-panel" defaultSize={30} id="activity" minSize={22}>
-            <ActivityPanel
-              activeView={activityView}
-              content={project.content}
-              error={project.error}
-              files={project.files}
-              folders={project.folders}
-              isDirty={project.isDirty}
-              loading={project.loading}
-              message={project.message}
-              onContentChange={(value) => {
-                project.setContent(value);
-                project.setIsDirty(true);
-              }}
-              onCreateFile={project.createFile}
-              onCreateFolder={project.createFolder}
-              onDelete={project.deleteSelectedPath}
-              onOpenFile={(filePath) => {
-                setActivityView("editor");
-                project.openFile(filePath);
-              }}
-              onRename={project.renameSelectedPath}
-              onRun={() => runner.runProject(project.selectedProject, project.setError)}
-              onSave={project.saveFile}
-              onSelectFolder={project.setSelectedFolder}
-              onStop={() => runner.stopProject(project.selectedProject, project.setError)}
-              onViewChange={setActivityView}
-              onWorkspaceChanged={handleWorkspaceChanged}
-              projectRunning={runner.projectRunning}
-              runStatus={runner.runStatus}
-              saving={project.saving}
-              selectedFile={project.selectedFile}
-              selectedFolder={project.selectedFolder}
-              selectedProject={project.selectedProject}
-              terminalLogs={runner.terminalLogs}
-              terminalRef={runner.terminalRef}
-            />
-          </Panel>
-        </Group>
+            <Panel className="ws-panel" defaultSize={42} id="activity" minSize={25}>
+              <ActivityPanel
+                activeView={activityView}
+                content={project.content}
+                error={project.error}
+                files={project.files}
+                folders={project.folders}
+                isDirty={project.isDirty}
+                loading={project.loading}
+                message={project.message}
+                onContentChange={(value) => {
+                  project.setContent(value);
+                  project.setIsDirty(true);
+                }}
+                onCreateFile={project.createFile}
+                onCreateFolder={project.createFolder}
+                onDelete={project.deleteSelectedPath}
+                onOpenFile={(filePath) => {
+                  setActivityView("editor");
+                  project.openFile(filePath);
+                }}
+                onRename={project.renameSelectedPath}
+                onRun={() => runner.runProject(project.selectedProject, project.setError)}
+                onSave={project.saveFile}
+                onSelectFolder={project.setSelectedFolder}
+                onStop={() => runner.stopProject(project.selectedProject, project.setError)}
+                onViewChange={handleActivityViewChange}
+                onWorkspaceChanged={handleWorkspaceChanged}
+                projectRunning={runner.projectRunning}
+                runStatus={runner.runStatus}
+                saving={project.saving}
+                selectedFile={project.selectedFile}
+                selectedFolder={project.selectedFolder}
+                selectedProject={project.selectedProject}
+                terminalLogs={runner.terminalLogs}
+                terminalRef={runner.terminalRef}
+              />
+            </Panel>
+          </Group>
+        </div>
       </div>
     </div>
   );
