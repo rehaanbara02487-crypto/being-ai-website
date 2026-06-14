@@ -1,847 +1,325 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import Editor from "@monaco-editor/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 
-import ChatPanel from "./ChatPanel";
-import SourceControlPanel from "./SourceControlPanel";
-import {
-  createProjectFile,
-  createProjectFolder,
-  deleteProjectPath,
-  getProject,
-  getProjectFile,
-  getProjectRunStatus,
-  getProjectRunStreamUrl,
-  listProjects,
-  renameProjectPath,
-  saveProjectFile,
-  startProjectRun,
-  stopProjectRun,
-} from "../lib/api";
-
-const buttonBase = {
-  border: "1px solid rgba(255,255,255,0.16)",
-  borderRadius: "12px",
-  color: "white",
-  cursor: "pointer",
-  fontSize: "0.95rem",
-  padding: "10px 12px",
-  textAlign: "left",
-  width: "100%",
-};
-
-const extensionLanguages = {
-  css: "css",
-  html: "html",
-  js: "javascript",
-  jsx: "javascript",
-  json: "json",
-  md: "markdown",
-  py: "python",
-  ts: "typescript",
-  tsx: "typescript",
-  txt: "plaintext",
-  yml: "yaml",
-  yaml: "yaml",
-};
-
-function languageForPath(filePath) {
-  const extension = filePath.split(".").pop()?.toLowerCase();
-  return extensionLanguages[extension] || "plaintext";
-}
+import ActivityPanel from "./ActivityPanel";
+import ChatWorkspace, { DEFAULT_WELCOME } from "./ChatWorkspace";
+import Sidebar from "./Sidebar";
+import { useChatSessions } from "../hooks/useChatSessions";
+import { useProjectRunner } from "../hooks/useProjectRunner";
+import { useWorkspaceProject } from "../hooks/useWorkspaceProject";
+import "./workspace/workspace.css";
 
 export default function Workspace({ onClose }) {
-  const [projects, setProjects] = useState([]);
-  const [selectedProject, setSelectedProject] = useState("");
-  const [files, setFiles] = useState([]);
-  const [folders, setFolders] = useState([]);
-  const [selectedFile, setSelectedFile] = useState("");
-  const [selectedFolder, setSelectedFolder] = useState("");
-  const [content, setContent] = useState("");
-  const [isDirty, setIsDirty] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("Loading projects...");
-  const [error, setError] = useState("");
-  const [terminalLogs, setTerminalLogs] = useState([]);
-  const [projectRunning, setProjectRunning] = useState(false);
-  const [runStatus, setRunStatus] = useState("Idle");
-  const eventSourceRef = useRef(null);
-  const terminalRef = useRef(null);
+  const [sidebarView, setSidebarView] = useState("projects");
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
+  const [activityView, setActivityView] = useState("editor");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [agentTask, setAgentTask] = useState(null);
+  const [chatSettings, setChatSettings] = useState({
+    agentMode: false,
+    autonomousMode: false,
+    useWorkspaceContext: false,
+    model: "",
+  });
 
-  function closeRunStream() {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-  }
+  const {
+    sessions,
+    activeSessionId,
+    setActiveSessionId,
+    createSession,
+    updateSession,
+    deleteSession,
+    getActiveSession,
+  } = useChatSessions();
 
-  function appendTerminalLog(stream, message) {
-    setTerminalLogs((logs) => [
-      ...logs,
-      {
-        stream,
-        message,
-      },
-    ]);
-  }
+  const runner = useProjectRunner();
 
-  function openRunStream(projectName) {
-    closeRunStream();
+  const project = useWorkspaceProject({
+    onRunnerReset: runner.resetRunner,
+    onProjectOpened: runner.refreshRunStatus,
+  });
 
-    const eventSource = new EventSource(getProjectRunStreamUrl(projectName));
-    eventSourceRef.current = eventSource;
-
-    eventSource.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-
-      appendTerminalLog(payload.stream, payload.message);
-      setProjectRunning(payload.running);
-
-      if (payload.running) {
-        setRunStatus("Running");
-      } else {
-        setRunStatus(
-          payload.returncode === null
-            ? "Idle"
-            : `Exited (${payload.returncode})`
-        );
-        closeRunStream();
-      }
-    };
-
-    eventSource.onerror = () => {
-      appendTerminalLog("system", "Log stream disconnected\n");
-      setProjectRunning(false);
-      setRunStatus("Disconnected");
-      closeRunStream();
-    };
-  }
+  const activeSession = getActiveSession();
+  const sessionMessages = activeSession?.messages || [DEFAULT_WELCOME];
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadProjects() {
-      try {
-        setError("");
-        const data = await listProjects();
-        if (cancelled) return;
-
-        const projectNames = data.projects || [];
-        setProjects(projectNames);
-        setMessage(
-          projectNames.length
-            ? "Select a project to load its files."
-            : "No projects found in the backend workspace."
-        );
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(loadError.message);
-          setMessage("Unable to load projects.");
-        }
-      }
-    }
-
-    loadProjects();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      closeRunStream();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [terminalLogs]);
-
-  async function refreshProjectFiles(projectName, successMessage) {
-    const data = await getProject(projectName);
-    const projectFiles = data.files || [];
-    const projectFolders = data.folders || [];
-
-    setFiles(projectFiles);
-    setFolders(projectFolders);
-    setMessage(
-      successMessage ||
-        (projectFiles.length || projectFolders.length
-          ? "Choose a file to open it in the editor."
-          : "This project has no files yet.")
-    );
-
-    return data;
-  }
-
-  async function refreshRunStatus(projectName) {
-    try {
-      const status = await getProjectRunStatus(projectName);
-
-      setProjectRunning(status.running);
-      setRunStatus(status.running ? "Running" : "Idle");
-
-      if (status.running) {
-        openRunStream(projectName);
-      } else {
-        closeRunStream();
-      }
-    } catch (statusError) {
-      setProjectRunning(false);
-      setRunStatus("Unavailable");
-      appendTerminalLog("system", `${statusError.message}\n`);
-    }
-  }
-
-  async function openProject(projectName) {
-    setSelectedProject(projectName);
-    setSelectedFile("");
-    setSelectedFolder("");
-    setFiles([]);
-    setFolders([]);
-    setContent("");
-    setIsDirty(false);
-    setTerminalLogs([]);
-    setProjectRunning(false);
-    setRunStatus("Idle");
-    closeRunStream();
-    setLoading(true);
-    setError("");
-    setMessage(`Loading ${projectName}...`);
-
-    try {
-      await refreshProjectFiles(projectName);
-      await refreshRunStatus(projectName);
-    } catch (loadError) {
-      setError(loadError.message);
-      setMessage("Unable to load project files.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function openFile(filePath) {
-    if (!selectedProject) return;
-
-    setSelectedFile(filePath);
-    setSelectedFolder("");
-    setLoading(true);
-    setError("");
-    setMessage(`Opening ${filePath}...`);
-
-    try {
-      const data = await getProjectFile(selectedProject, filePath);
-      setContent(data.content || "");
-      setIsDirty(false);
-      setMessage(`Opened ${filePath}.`);
-    } catch (loadError) {
-      setContent("");
-      setError(loadError.message);
-      setMessage("Unable to open file.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function saveFile() {
-    if (!selectedProject || !selectedFile) return;
-
-    setSaving(true);
-    setError("");
-    setMessage(`Saving ${selectedFile}...`);
-
-    try {
-      await saveProjectFile(selectedProject, selectedFile, content);
-      setIsDirty(false);
-      setMessage(`Saved ${selectedFile}.`);
-    } catch (saveError) {
-      setError(saveError.message);
-      setMessage("Unable to save file.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function runProject() {
-    if (!selectedProject) return;
-
-    setError("");
-    setTerminalLogs([]);
-    setRunStatus("Starting");
-    appendTerminalLog("system", `Starting ${selectedProject}...\n`);
-
-    try {
-      const status = await startProjectRun(selectedProject);
-      setProjectRunning(status.running);
-      setRunStatus(status.running ? "Running" : "Idle");
-      openRunStream(selectedProject);
-    } catch (runError) {
-      setProjectRunning(false);
-      setRunStatus("Failed");
-      setError(runError.message);
-      appendTerminalLog("stderr", `${runError.message}\n`);
-    }
-  }
-
-  async function stopProject() {
-    if (!selectedProject) return;
-
-    setError("");
-    setRunStatus("Stopping");
-    appendTerminalLog("system", `Stopping ${selectedProject}...\n`);
-
-    try {
-      const status = await stopProjectRun(selectedProject);
-      setProjectRunning(status.running);
-      setRunStatus(status.running ? "Running" : "Stopped");
-    } catch (stopError) {
-      setError(stopError.message);
-      appendTerminalLog("stderr", `${stopError.message}\n`);
-    }
-  }
-
-  async function createFile() {
-    if (!selectedProject) return;
-
-    const filePath = window.prompt("New file path");
-    if (!filePath) return;
-
-    setLoading(true);
-    setError("");
-    setMessage(`Creating ${filePath}...`);
-
-    try {
-      await createProjectFile(selectedProject, filePath);
-      await refreshProjectFiles(selectedProject, `Created file ${filePath}.`);
-    } catch (createError) {
-      setError(createError.message);
-      setMessage("Unable to create file.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function createFolder() {
-    if (!selectedProject) return;
-
-    const folderPath = window.prompt("New folder path");
-    if (!folderPath) return;
-
-    setLoading(true);
-    setError("");
-    setMessage(`Creating ${folderPath}...`);
-
-    try {
-      await createProjectFolder(selectedProject, folderPath);
-      await refreshProjectFiles(selectedProject, `Created folder ${folderPath}.`);
-    } catch (createError) {
-      setError(createError.message);
-      setMessage("Unable to create folder.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function renameSelectedPath() {
-    if (!selectedProject) return;
-
-    const currentPath = selectedFolder || selectedFile;
-    if (!currentPath) {
-      setMessage("Select a file or folder to rename.");
+    if (activeSessionId) return;
+    if (sessions.length === 0) {
+      createSession("New Chat");
       return;
     }
+    setActiveSessionId(sessions[0].id);
+  }, [activeSessionId, createSession, sessions, setActiveSessionId]);
 
-    const newPath = window.prompt("Rename to", currentPath);
-    if (!newPath || newPath === currentPath) return;
-
-    setLoading(true);
-    setError("");
-    setMessage(`Renaming ${currentPath}...`);
-
-    try {
-      await renameProjectPath(selectedProject, currentPath, newPath);
-
-      if (selectedFile === currentPath || selectedFile.startsWith(`${currentPath}/`)) {
-        setSelectedFile("");
-        setContent("");
-        setIsDirty(false);
+  const handleChatSettingsChange = useCallback((patch) => {
+    setChatSettings((current) => {
+      const next = { ...current, ...patch };
+      if (patch.agentMode === false) {
+        next.autonomousMode = false;
       }
-
-      if (selectedFolder === currentPath || selectedFolder.startsWith(`${currentPath}/`)) {
-        setSelectedFolder("");
+      if (patch.agentMode === true) {
+        next.useWorkspaceContext = true;
       }
+      return next;
+    });
+  }, []);
 
-      await refreshProjectFiles(selectedProject, `Renamed ${currentPath} to ${newPath}.`);
-    } catch (renameError) {
-      setError(renameError.message);
-      setMessage("Unable to rename path.");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const handleNewChat = useCallback(() => {
+    createSession("New Chat");
+    setSidebarView("history");
+    setSidebarExpanded(true);
+  }, [createSession]);
 
-  async function deleteSelectedPath() {
-    if (!selectedProject) return;
-
-    const currentPath = selectedFolder || selectedFile;
-    if (!currentPath) {
-      setMessage("Select a file or folder to delete.");
-      return;
-    }
-
-    if (!window.confirm(`Delete ${currentPath}?`)) return;
-
-    setLoading(true);
-    setError("");
-    setMessage(`Deleting ${currentPath}...`);
-
-    try {
-      await deleteProjectPath(selectedProject, currentPath);
-
-      if (selectedFile === currentPath || selectedFile.startsWith(`${currentPath}/`)) {
-        setSelectedFile("");
-        setContent("");
-        setIsDirty(false);
-      }
-
-      if (selectedFolder === currentPath || selectedFolder.startsWith(`${currentPath}/`)) {
-        setSelectedFolder("");
-      }
-
-      await refreshProjectFiles(selectedProject, `Deleted ${currentPath}.`);
-    } catch (deleteError) {
-      setError(deleteError.message);
-      setMessage("Unable to delete path.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const editorLanguage = useMemo(
-    () => (selectedFile ? languageForPath(selectedFile) : "plaintext"),
-    [selectedFile]
+  const handleSelectSession = useCallback(
+    (sessionId) => {
+      setActiveSessionId(sessionId);
+      setSidebarView("history");
+    },
+    [setActiveSessionId]
   );
 
+  const handleMessagesChange = useCallback(
+    (messages) => {
+      if (!activeSessionId) return;
+      updateSession(activeSessionId, { messages });
+    },
+    [activeSessionId, updateSession]
+  );
+
+  const handleSessionTitleChange = useCallback(
+    (title) => {
+      if (!activeSessionId) return;
+      updateSession(activeSessionId, { title });
+    },
+    [activeSessionId, updateSession]
+  );
+
+  const handleNavigate = useCallback((viewId) => {
+    setSidebarView(viewId);
+    setSidebarExpanded(true);
+    if (viewId === "new-chat") {
+      handleNewChat();
+    }
+  }, [handleNewChat]);
+
+  const searchResults = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+
+    const results = [];
+
+    project.projects.forEach((projectName) => {
+      if (projectName.toLowerCase().includes(query)) {
+        results.push({
+          key: `project-${projectName}`,
+          label: projectName,
+          meta: "Project",
+          onSelect: () => project.openProject(projectName),
+        });
+      }
+    });
+
+    project.files.forEach((filePath) => {
+      if (filePath.toLowerCase().includes(query)) {
+        results.push({
+          key: `file-${filePath}`,
+          label: filePath,
+          meta: "File",
+          onSelect: () => project.openFile(filePath),
+        });
+      }
+    });
+
+    sessions.forEach((session) => {
+      if (session.title.toLowerCase().includes(query)) {
+        results.push({
+          key: `chat-${session.id}`,
+          label: session.title,
+          meta: "Chat",
+          onSelect: () => handleSelectSession(session.id),
+        });
+      }
+    });
+
+    return results.slice(0, 20);
+  }, [handleSelectSession, project.files, project.openFile, project.openProject, project.projects, searchQuery, sessions]);
+
+  async function handleProjectCreated(projectName) {
+    await project.reloadProjects();
+    await project.openProject(projectName);
+    setActivityView("explorer");
+    setSidebarView("projects");
+  }
+
+  async function handleFilesChanged() {
+    if (project.selectedProject) {
+      await project.refreshProjectFiles(project.selectedProject, "Workspace updated by AI agent.");
+      if (project.selectedFile) {
+        await project.openFile(project.selectedFile);
+      }
+    }
+  }
+
+  async function handleWorkspaceChanged() {
+    if (project.selectedProject) {
+      await project.refreshProjectFiles(project.selectedProject, "Workspace updated from source control.");
+      if (project.selectedFile) {
+        await project.openFile(project.selectedFile);
+      }
+    }
+  }
+
+  function handleOpenFileFromChat(filePath) {
+    if (!filePath) return;
+    setActivityView("editor");
+    project.openFile(filePath);
+  }
+
+  const chatSessionKey = activeSessionId || "default-chat";
+
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "beingai-workspace-layout",
+    storage: localStorage,
+  });
+
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 1000,
-        background: "rgba(0,0,0,0.88)",
-        backdropFilter: "blur(18px)",
-        color: "white",
-        padding: "36px",
-        boxSizing: "border-box",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: "20px",
-          marginBottom: "24px",
-        }}
-      >
-        <div>
-          <p
-            style={{
-              color: "#00ffff",
-              letterSpacing: "6px",
-              margin: "0 0 8px",
-              textTransform: "uppercase",
-            }}
-          >
-            IDE Workspace
-          </p>
-          <h2 style={{ fontSize: "2.6rem", margin: 0 }}>Project Editor</h2>
+    <div className="workspace-shell" style={{ inset: 0, position: "fixed", zIndex: 1000 }}>
+      <header className="ws-header">
+        <div className="ws-header-brand">
+          <strong>BEING AI</strong>
+          <span style={{ color: "var(--ws-muted)", fontSize: "0.82rem" }}>
+            {project.selectedProject || "No project selected"}
+          </span>
         </div>
 
-        <button
-          onClick={onClose}
-          style={{
-            background: "rgba(255,255,255,0.08)",
-            border: "1px solid rgba(255,255,255,0.2)",
-            borderRadius: "999px",
-            color: "white",
-            cursor: "pointer",
-            padding: "12px 20px",
-          }}
-        >
-          Close
-        </button>
-      </div>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "240px 300px minmax(0, 1fr) 340px",
-          gap: "18px",
-          height: "calc(100vh - 154px)",
-          minHeight: 0,
-        }}
-      >
-        <aside
-          style={{
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: "22px",
-            padding: "18px",
-            overflow: "auto",
-          }}
-        >
-          <h3 style={{ color: "#00ffff", marginTop: 0 }}>Projects</h3>
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {projects.map((project) => (
-              <button
-                key={project}
-                onClick={() => openProject(project)}
-                style={{
-                  ...buttonBase,
-                  background:
-                    project === selectedProject
-                      ? "rgba(0,255,255,0.22)"
-                      : "rgba(255,255,255,0.06)",
-                }}
-              >
-                {project}
-              </button>
-            ))}
-          </div>
-        </aside>
-
-        <aside
-          style={{
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: "22px",
-            padding: "18px",
-            overflow: "auto",
-          }}
-        >
-          <h3 style={{ color: "#00ffff", marginTop: 0 }}>Files</h3>
-          {selectedProject ? (
-            <>
-              <div
-                style={{
-                  display: "grid",
-                  gap: "8px",
-                  gridTemplateColumns: "1fr 1fr",
-                  marginBottom: "14px",
-                }}
-              >
-                <button onClick={createFile} style={buttonBase}>
-                  + File
-                </button>
-                <button onClick={createFolder} style={buttonBase}>
-                  + Folder
-                </button>
-                <button onClick={renameSelectedPath} style={buttonBase}>
-                  Rename
-                </button>
-                <button onClick={deleteSelectedPath} style={buttonBase}>
-                  Delete
-                </button>
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {folders.map((folder) => (
-                  <button
-                    key={folder}
-                    onClick={() => {
-                      setSelectedFolder(folder);
-                      setSelectedFile("");
-                    }}
-                    style={{
-                      ...buttonBase,
-                      background:
-                        folder === selectedFolder
-                          ? "rgba(0,255,255,0.22)"
-                          : "rgba(255,255,255,0.06)",
-                      fontFamily:
-                        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                      overflowWrap: "anywhere",
-                    }}
-                  >
-                    {folder}/
-                  </button>
-                ))}
-
-                {files.map((file) => (
-                  <button
-                    key={file}
-                    onClick={() => openFile(file)}
-                    style={{
-                      ...buttonBase,
-                      background:
-                        file === selectedFile
-                          ? "rgba(0,255,255,0.22)"
-                          : "rgba(255,255,255,0.06)",
-                      fontFamily:
-                        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                      overflowWrap: "anywhere",
-                    }}
-                  >
-                    {file}
-                  </button>
-                ))}
-              </div>
-            </>
+        <div className="ws-header-actions">
+          <span
+            className={
+              runner.projectRunning ? "ws-status ws-status-running" : "ws-status"
+            }
+          >
+            {runner.runStatus}
+          </span>
+          {runner.projectRunning ? (
+            <button
+              className="ws-btn ws-btn-danger"
+              disabled={!project.selectedProject}
+              onClick={() => runner.stopProject(project.selectedProject, project.setError)}
+              type="button"
+            >
+              Stop
+            </button>
           ) : (
-            <p style={{ opacity: 0.72 }}>Select a project first.</p>
+            <button
+              className="ws-btn ws-btn-primary"
+              disabled={!project.selectedProject}
+              onClick={() => {
+                setActivityView("terminal");
+                runner.runProject(project.selectedProject, project.setError);
+              }}
+              type="button"
+            >
+              Run
+            </button>
           )}
-        </aside>
-
-        <main
-          style={{
-            background: "rgba(10,10,20,0.92)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: "22px",
-            display: "flex",
-            flexDirection: "column",
-            minWidth: 0,
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              alignItems: "center",
-              borderBottom: "1px solid rgba(255,255,255,0.1)",
-              display: "flex",
-              gap: "16px",
-              justifyContent: "space-between",
-              padding: "14px 18px",
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <strong
-                style={{
-                  display: "block",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {selectedFile || "No file selected"}
-                {isDirty ? " *" : ""}
-              </strong>
-              <span style={{ color: error ? "#ff8585" : "rgba(255,255,255,0.65)" }}>
-                {error || message}
-              </span>
-            </div>
-
-            <div
-              style={{
-                alignItems: "center",
-                display: "flex",
-                gap: "10px",
-              }}
-            >
-              <span
-                style={{
-                  color: projectRunning ? "#00ffff" : "rgba(255,255,255,0.65)",
-                  fontSize: "0.9rem",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {runStatus}
-              </span>
-
-              {projectRunning ? (
-                <button
-                  disabled={!selectedProject}
-                  onClick={stopProject}
-                  style={{
-                    background: "#ff8585",
-                    border: "none",
-                    borderRadius: "999px",
-                    color: "black",
-                    cursor: !selectedProject ? "not-allowed" : "pointer",
-                    fontWeight: "bold",
-                    padding: "12px 22px",
-                  }}
-                >
-                  Stop
-                </button>
-              ) : (
-                <button
-                  disabled={!selectedProject}
-                  onClick={runProject}
-                  style={{
-                    background: !selectedProject ? "rgba(255,255,255,0.18)" : "#00ffff",
-                    border: "none",
-                    borderRadius: "999px",
-                    color: "black",
-                    cursor: !selectedProject ? "not-allowed" : "pointer",
-                    fontWeight: "bold",
-                    padding: "12px 22px",
-                  }}
-                >
-                  Run
-                </button>
-              )}
-
-              <button
-                disabled={!selectedFile || saving}
-                onClick={saveFile}
-                style={{
-                  background:
-                    !selectedFile || saving ? "rgba(255,255,255,0.18)" : "#00ffff",
-                  border: "none",
-                  borderRadius: "999px",
-                  color: "black",
-                  cursor: !selectedFile || saving ? "not-allowed" : "pointer",
-                  fontWeight: "bold",
-                  padding: "12px 22px",
-                }}
-              >
-                {saving ? "Saving..." : "Save File"}
-              </button>
-            </div>
-          </div>
-
-          <div style={{ flex: 1, minHeight: 0 }}>
-            {selectedFile ? (
-              <Editor
-                height="100%"
-                language={editorLanguage}
-                onChange={(value) => {
-                  setContent(value || "");
-                  setIsDirty(true);
-                }}
-                options={{
-                  automaticLayout: true,
-                  fontSize: 14,
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                }}
-                theme="vs-dark"
-                value={content}
-              />
-            ) : (
-              <div
-                style={{
-                  alignItems: "center",
-                  color: "rgba(255,255,255,0.64)",
-                  display: "flex",
-                  height: "100%",
-                  justifyContent: "center",
-                  textAlign: "center",
-                }}
-              >
-                {loading ? "Loading..." : "Select a file to open it in Monaco Editor."}
-              </div>
-            )}
-          </div>
-
-          <div
-            style={{
-              borderTop: "1px solid rgba(255,255,255,0.1)",
-              background: "rgba(0,0,0,0.48)",
-              height: "190px",
-              minHeight: "190px",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            <div
-              style={{
-                alignItems: "center",
-                borderBottom: "1px solid rgba(255,255,255,0.08)",
-                color: "#00ffff",
-                display: "flex",
-                fontWeight: "bold",
-                justifyContent: "space-between",
-                padding: "10px 14px",
-              }}
-            >
-              <span>Terminal</span>
-              <span style={{ color: "rgba(255,255,255,0.65)", fontWeight: "normal" }}>
-                {selectedProject || "No project selected"}
-              </span>
-            </div>
-
-            <pre
-              ref={terminalRef}
-              style={{
-                color: "rgba(255,255,255,0.86)",
-                flex: 1,
-                fontFamily:
-                  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                fontSize: "0.9rem",
-                lineHeight: 1.5,
-                margin: 0,
-                overflow: "auto",
-                padding: "12px 14px",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {terminalLogs.length ? (
-                terminalLogs.map((log, index) => (
-                  <span
-                    key={`${index}-${log.stream}`}
-                    style={{
-                      color:
-                        log.stream === "stderr"
-                          ? "#ff8585"
-                          : log.stream === "system"
-                            ? "#00ffff"
-                            : "rgba(255,255,255,0.88)",
-                    }}
-                  >
-                    {log.message}
-                  </span>
-                ))
-              ) : (
-                <span style={{ color: "rgba(255,255,255,0.45)" }}>
-                  Run a project to see stdout and stderr here.
-                </span>
-              )}
-            </pre>
-          </div>
-        </main>
-
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "18px",
-            minHeight: 0,
-          }}
-        >
-          <ChatPanel
-            selectedProject={selectedProject}
-            onFilesChanged={async () => {
-              if (selectedProject) {
-                await refreshProjectFiles(selectedProject, "Workspace updated by AI agent.");
-                if (selectedFile) {
-                  await openFile(selectedFile);
-                }
-              }
-            }}
-            onProjectCreated={async (projectName) => {
-              const data = await listProjects();
-              setProjects(data.projects || []);
-              await openProject(projectName);
-              setMessage(`Project "${projectName}" created. Open a file or click Run.`);
-            }}
-          />
-          <SourceControlPanel
-            selectedProject={selectedProject}
-            onWorkspaceChanged={async () => {
-              if (selectedProject) {
-                await refreshProjectFiles(selectedProject, "Workspace updated from source control.");
-                if (selectedFile) {
-                  await openFile(selectedFile);
-                }
-              }
-            }}
-          />
+          <button className="ws-btn" onClick={onClose} type="button">
+            Close
+          </button>
         </div>
+      </header>
+
+      <div className="ws-main-layout">
+        <Group
+          className="ws-panel-group"
+          defaultLayout={defaultLayout}
+          id="beingai-workspace-layout"
+          onLayoutChanged={onLayoutChanged}
+          orientation="horizontal"
+        >
+          <Panel className="ws-panel" defaultSize={18} id="sidebar" maxSize={28} minSize={12}>
+            <Sidebar
+              activeSessionId={activeSessionId}
+              activeView={sidebarView}
+              agentTask={agentTask}
+              chatSessions={sessions}
+              chatSettings={chatSettings}
+              expanded={sidebarExpanded}
+              onChatSettingsChange={handleChatSettingsChange}
+              onDeleteSession={deleteSession}
+              onNavigate={handleNavigate}
+              onNewChat={handleNewChat}
+              onSearchQueryChange={setSearchQuery}
+              onSelectProject={project.openProject}
+              onSelectSession={handleSelectSession}
+              onToggleExpanded={() => setSidebarExpanded((current) => !current)}
+              projects={project.projects}
+              searchQuery={searchQuery}
+              searchResults={searchResults}
+              selectedProject={project.selectedProject}
+              selectedProjectLabel={project.selectedProject}
+            />
+          </Panel>
+
+          <Separator className="ws-resize-handle ws-resize-handle-horizontal" />
+
+          <Panel className="ws-panel" defaultSize={52} id="chat" minSize={35}>
+            <ChatWorkspace
+              key={chatSessionKey}
+              chatSettings={chatSettings}
+              initialMessages={sessionMessages}
+              onAgentTaskChange={setAgentTask}
+              onChatSettingsChange={handleChatSettingsChange}
+              onFilesChanged={handleFilesChanged}
+              onMessagesChange={handleMessagesChange}
+              onOpenFile={handleOpenFileFromChat}
+              onProjectCreated={handleProjectCreated}
+              onSessionTitleChange={handleSessionTitleChange}
+              selectedProject={project.selectedProject}
+              sessionId={chatSessionKey}
+            />
+          </Panel>
+
+          <Separator className="ws-resize-handle ws-resize-handle-horizontal" />
+
+          <Panel className="ws-panel" defaultSize={30} id="activity" minSize={22}>
+            <ActivityPanel
+              activeView={activityView}
+              content={project.content}
+              error={project.error}
+              files={project.files}
+              folders={project.folders}
+              isDirty={project.isDirty}
+              loading={project.loading}
+              message={project.message}
+              onContentChange={(value) => {
+                project.setContent(value);
+                project.setIsDirty(true);
+              }}
+              onCreateFile={project.createFile}
+              onCreateFolder={project.createFolder}
+              onDelete={project.deleteSelectedPath}
+              onOpenFile={(filePath) => {
+                setActivityView("editor");
+                project.openFile(filePath);
+              }}
+              onRename={project.renameSelectedPath}
+              onRun={() => runner.runProject(project.selectedProject, project.setError)}
+              onSave={project.saveFile}
+              onSelectFolder={project.setSelectedFolder}
+              onStop={() => runner.stopProject(project.selectedProject, project.setError)}
+              onViewChange={setActivityView}
+              onWorkspaceChanged={handleWorkspaceChanged}
+              projectRunning={runner.projectRunning}
+              runStatus={runner.runStatus}
+              saving={project.saving}
+              selectedFile={project.selectedFile}
+              selectedFolder={project.selectedFolder}
+              selectedProject={project.selectedProject}
+              terminalLogs={runner.terminalLogs}
+              terminalRef={runner.terminalRef}
+            />
+          </Panel>
+        </Group>
       </div>
     </div>
   );

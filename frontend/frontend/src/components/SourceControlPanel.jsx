@@ -23,7 +23,7 @@ const smallButton = {
   padding: "8px 12px",
 };
 
-export default function SourceControlPanel({ selectedProject, onWorkspaceChanged }) {
+export default function SourceControlPanel({ selectedProject, onWorkspaceChanged, compact = false }) {
   const [branchInfo, setBranchInfo] = useState({ branch: "", branches: [] });
   const [changes, setChanges] = useState([]);
   const [history, setHistory] = useState([]);
@@ -175,19 +175,35 @@ export default function SourceControlPanel({ selectedProject, onWorkspaceChanged
   return (
     <aside
       style={{
-        background: "rgba(255,255,255,0.05)",
-        border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: "22px",
+        background: compact ? "transparent" : "rgba(255,255,255,0.05)",
+        border: compact ? "none" : "1px solid rgba(255,255,255,0.1)",
+        borderRadius: compact ? 0 : "22px",
         color: "white",
         display: "flex",
         flex: "1 1 0",
         flexDirection: "column",
+        height: compact ? "100%" : undefined,
         minHeight: 0,
         overflow: "hidden",
       }}
     >
-      <div style={{ borderBottom: "1px solid rgba(255,255,255,0.1)", padding: "14px" }}>
-        <h3 style={{ color: "#00ffff", margin: "0 0 8px" }}>Source Control</h3>
+      <div
+        style={{
+          borderBottom: "1px solid rgba(255,255,255,0.1)",
+          padding: compact ? "10px 12px" : "14px",
+        }}
+      >
+        <h3
+          style={{
+            color: "#00ffff",
+            fontSize: compact ? "0.72rem" : "1rem",
+            letterSpacing: compact ? "0.06em" : undefined,
+            margin: "0 0 8px",
+            textTransform: compact ? "uppercase" : undefined,
+          }}
+        >
+          Source Control
+        </h3>
         <div style={{ color: error ? "#ff8585" : "rgba(255,255,255,0.62)", fontSize: "0.86rem" }}>
           {error || message}
         </div>
