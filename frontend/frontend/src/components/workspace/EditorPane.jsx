@@ -22,7 +22,7 @@ export default function EditorPane({
       <div className="ws-editor-toolbar">
         <div style={{ minWidth: 0 }}>
           <strong style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis" }}>
-            {selectedFile || "No file selected"}
+            {selectedFile || (selectedProject ? "Editor" : "Workspace")}
             {isDirty ? " *" : ""}
           </strong>
           <span style={{ color: error ? "var(--ws-error)" : "var(--ws-muted)", fontSize: "0.75rem" }}>
@@ -58,15 +58,15 @@ export default function EditorPane({
           <div className="ws-editor-empty">Loading file...</div>
         ) : !selectedProject ? (
           <EmptyState
-            description="Open Explorer and select a project to browse and edit files."
+            description="Open a folder from the left Explorer sidebar to browse and edit files."
             icon="{ }"
-            title="No project selected"
+            title="Open a folder to begin"
           />
         ) : (
           <EmptyState
-            description="Pick a file from Explorer to open it in the editor."
+            description="Choose a file from Explorer to open it here."
             icon="{ }"
-            title="No file open"
+            title="Select a file from Explorer"
           />
         )}
       </div>

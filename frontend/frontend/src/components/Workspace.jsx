@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 import ActivityPanel from "./ActivityPanel";
 import ChatWorkspace, { DEFAULT_WELCOME } from "./ChatWorkspace";
@@ -8,6 +8,7 @@ import { useChatSessions } from "../hooks/useChatSessions";
 import { useOllamaStatus } from "../hooks/useOllamaStatus";
 import { useRepositoryIntelligence } from "../hooks/useRepositoryIntelligence";
 import { useProjectRunner } from "../hooks/useProjectRunner";
+import { useActivityPanel } from "../hooks/useActivityPanel";
 import { useSidebarState } from "../hooks/useSidebarState";
 import { useWorkspaceProject } from "../hooks/useWorkspaceProject";
 import { logGeneration, recordGenerationStep, GENERATION_TAGS } from "../lib/agentDebug";
@@ -66,6 +67,10 @@ export default function Workspace({ onClose }) {
 
   const ollama = useOllamaStatus(chatSettings.model);
   const repository = useRepositoryIntelligence(project.selectedProject);
+  const activityPanel = useActivityPanel({
+    selectedProject: project.selectedProject,
+    selectedFile: project.selectedFile,
+  });
 
   useEffect(() => {
     if (project.workspaceKind !== "external" || !project.selectedProject) {
@@ -276,6 +281,12 @@ export default function Workspace({ onClose }) {
         return;
       }
 
+      if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "j") {
+        event.preventDefault();
+        activityPanel.togglePanel();
+        return;
+      }
+
       if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "b") {
         event.preventDefault();
         toggleSidebarExpanded();
@@ -332,6 +343,7 @@ export default function Workspace({ onClose }) {
     handleSidebarNavigate,
     sidebarExpanded,
     toggleSidebarExpanded,
+    activityPanel.togglePanel,
   ]);
 
   async function handleProjectCreated(projectName) {
@@ -425,15 +437,18 @@ export default function Workspace({ onClose }) {
   function handleOpenFileFromChat(filePath) {
     if (!filePath) return;
     setActivityView("editor");
+    activityPanel.openPanel();
+    project.openFile(filePath);
+  }
+
+  function handleOpenFileInEditor(filePath) {
+    setActivityView("editor");
+    activityPanel.openPanel();
     project.openFile(filePath);
   }
 
   const chatSessionKey = activeSessionId || "default-chat";
-
-  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: "beingai-workspace-layout",
-    storage: localStorage,
-  });
+  const chatPanelSize = activityPanel.panelOpen ? 100 - activityPanel.panelWidth : 100;
 
   return (
     <div className="workspace-shell" style={{ inset: 0, position: "fixed", zIndex: 1000 }}>
@@ -538,13 +553,16 @@ export default function Workspace({ onClose }) {
           onOpenFolder={project.openFolderDialog}
           onOpenFile={(filePath) => {
             setActivityView("editor");
+            activityPanel.openPanel();
             project.openFile(filePath);
           }}
           onOpenGit={() => {
             setActivityView("git");
+            activityPanel.openPanel();
           }}
           onOpenTerminal={() => {
             setActivityView("terminal");
+            activityPanel.openPanel();
           }}
           onRename={project.renameSelectedPath}
           onRunProject={() => {
@@ -556,6 +574,7 @@ export default function Workspace({ onClose }) {
           onSelectProject={(projectName) => {
             project.openProject(projectName);
             setActivityView("explorer");
+            activityPanel.openPanel();
           }}
           onSelectSession={handleSelectSession}
           projectRunning={runner.projectRunning}
@@ -573,12 +592,16 @@ export default function Workspace({ onClose }) {
         <div className="ws-workspace-body">
           <Group
             className="ws-panel-group"
-            defaultLayout={defaultLayout}
             id="beingai-workspace-layout"
-            onLayoutChanged={onLayoutChanged}
+            onLayoutChanged={activityPanel.savePanelWidth}
             orientation="horizontal"
           >
-            <Panel className="ws-panel" defaultSize={58} id="chat" minSize={35}>
+            <Panel
+              className="ws-panel ws-panel-chat"
+              defaultSize={chatPanelSize}
+              id="chat"
+              minSize={activityPanel.panelOpen ? 35 : 100}
+            >
               <ChatWorkspace
                 key={chatSessionKey}
                 chatSettings={chatSettings}
@@ -609,52 +632,79 @@ export default function Workspace({ onClose }) {
               />
             </Panel>
 
-            <Separator className="ws-resize-handle ws-resize-handle-horizontal" />
-
-            <Panel className="ws-panel" defaultSize={42} id="activity" minSize={25}>
-              <ActivityPanel
-                activeView={activityView}
-                content={project.content}
-                error={project.error}
-                files={project.files}
-                folders={project.folders}
-                intelligence={repository.intelligence}
-                intelligenceError={repository.error}
-                intelligenceLoading={repository.loading}
-                isDirty={project.isDirty}
-                loading={project.loading}
-                message={project.message}
-                onContentChange={(value) => {
-                  project.setContent(value);
-                  project.setIsDirty(true);
-                }}
-                onCreateFile={project.createFile}
-                onCreateFolder={project.createFolder}
-                onDelete={project.deleteSelectedPath}
-                onOpenFile={(filePath) => {
-                  setActivityView("editor");
-                  project.openFile(filePath);
-                }}
-                onRename={project.renameSelectedPath}
-                onFixIssue={handleFixTerminalIssue}
-                onRun={() => runner.runProject(project.selectedProject, project.setError)}
-                onSave={project.saveFile}
-                onSelectFolder={project.setSelectedFolder}
-                onStop={() => runner.stopProject(project.selectedProject, project.setError)}
-                onViewChange={handleActivityViewChange}
-                onWorkspaceChanged={handleWorkspaceChanged}
-                projectRunning={runner.projectRunning}
-                runStatus={runner.runStatus}
-                saving={project.saving}
-                selectedFile={project.selectedFile}
-                selectedFolder={project.selectedFolder}
-                selectedProject={project.selectedProject}
-                terminalAnalysis={runner.terminalAnalysis}
-                terminalLogs={runner.terminalLogs}
-                terminalRef={runner.terminalRef}
-              />
-            </Panel>
+            {activityPanel.panelOpen ? (
+              <>
+                <Separator className="ws-resize-handle ws-resize-handle-horizontal" />
+                <Panel
+                  className="ws-panel ws-panel-activity"
+                  defaultSize={activityPanel.panelWidth}
+                  id="activity"
+                  minSize={25}
+                >
+                  <div className="ws-activity-shell">
+                    <button
+                      aria-label="Collapse editor panel"
+                      className="ws-activity-panel-toggle"
+                      onClick={activityPanel.closePanel}
+                      title="Collapse panel (Ctrl+J)"
+                      type="button"
+                    >
+                      ›
+                    </button>
+                    <ActivityPanel
+                      activeView={activityView}
+                      content={project.content}
+                      error={project.error}
+                      files={project.files}
+                      folders={project.folders}
+                      intelligence={repository.intelligence}
+                      intelligenceError={repository.error}
+                      intelligenceLoading={repository.loading}
+                      isDirty={project.isDirty}
+                      loading={project.loading}
+                      message={project.message}
+                      onContentChange={(value) => {
+                        project.setContent(value);
+                        project.setIsDirty(true);
+                      }}
+                      onCreateFile={project.createFile}
+                      onCreateFolder={project.createFolder}
+                      onDelete={project.deleteSelectedPath}
+                      onOpenFile={handleOpenFileInEditor}
+                      onRename={project.renameSelectedPath}
+                      onFixIssue={handleFixTerminalIssue}
+                      onRun={() => runner.runProject(project.selectedProject, project.setError)}
+                      onSave={project.saveFile}
+                      onSelectFolder={project.setSelectedFolder}
+                      onStop={() => runner.stopProject(project.selectedProject, project.setError)}
+                      onViewChange={handleActivityViewChange}
+                      onWorkspaceChanged={handleWorkspaceChanged}
+                      projectRunning={runner.projectRunning}
+                      runStatus={runner.runStatus}
+                      saving={project.saving}
+                      selectedFile={project.selectedFile}
+                      selectedFolder={project.selectedFolder}
+                      selectedProject={project.selectedProject}
+                      terminalAnalysis={runner.terminalAnalysis}
+                      terminalLogs={runner.terminalLogs}
+                      terminalRef={runner.terminalRef}
+                    />
+                  </div>
+                </Panel>
+              </>
+            ) : null}
           </Group>
+          {!activityPanel.panelOpen && activityPanel.hasWorkspaceContent ? (
+            <button
+              aria-label="Expand editor panel"
+              className="ws-activity-panel-toggle ws-activity-panel-toggle-collapsed"
+              onClick={activityPanel.openPanel}
+              title="Expand panel (Ctrl+J)"
+              type="button"
+            >
+              ‹
+            </button>
+          ) : null}
         </div>
       </div>
     </div>
