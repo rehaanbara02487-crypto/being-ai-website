@@ -39,14 +39,22 @@ export default function TerminalView({
           <strong>Run failed</strong>
           <pre>{terminalAnalysis.findings?.map((item) => item.message).join("\n") || terminalAnalysis.excerpt}</pre>
           {onFixIssue && (
-            <button
-              className="ws-btn ws-btn-primary"
-              onClick={() => onFixIssue(terminalAnalysis.suggested_prompt)}
-              style={{ marginTop: "8px" }}
-              type="button"
-            >
-              Fix Issue
-            </button>
+            <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+              <button
+                className="ws-btn ws-btn-primary"
+                onClick={() => onFixIssue(terminalAnalysis.suggested_prompt)}
+                type="button"
+              >
+                Fix Issue
+              </button>
+              <button
+                className="ws-btn"
+                onClick={() => onFixIssue("Fix current error using the terminal output above.")}
+                type="button"
+              >
+                Fix Current Error
+              </button>
+            </div>
           )}
         </div>
       )}

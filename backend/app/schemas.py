@@ -28,6 +28,8 @@ class OllamaChatRequest(BaseModel):
     project_name: str | None = None
     use_workspace_context: bool = False
     max_context_chars: int | None = None
+    opened_file: str | None = None
+    selected_folder: str | None = None
 
 
 class AgentFileActionPlanRequest(BaseModel):
@@ -36,6 +38,9 @@ class AgentFileActionPlanRequest(BaseModel):
     model: str | None = None
     use_workspace_context: bool = True
     max_context_chars: int | None = None
+    opened_file: str | None = None
+    selected_folder: str | None = None
+    auto_apply: bool = False
 
 
 class AgentFileActionApplyRequest(BaseModel):
@@ -58,6 +63,9 @@ class AutonomousAgentStartRequest(BaseModel):
     model: str | None = None
     max_iterations: int = 3
     max_context_chars: int | None = None
+    opened_file: str | None = None
+    selected_folder: str | None = None
+    auto_apply: bool = True
 
 
 class ProjectPlanRequest(BaseModel):

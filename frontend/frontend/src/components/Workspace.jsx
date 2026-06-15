@@ -11,12 +11,11 @@ import { useProjectRunner } from "../hooks/useProjectRunner";
 import { useSidebarState } from "../hooks/useSidebarState";
 import { useWorkspaceProject } from "../hooks/useWorkspaceProject";
 import { logGeneration, recordGenerationStep, GENERATION_TAGS } from "../lib/agentDebug";
+import { searchProjectIndex } from "../lib/api";
 import "./workspace/workspace.css";
 
 const SIDEBAR_TO_ACTIVITY = {
   explorer: "explorer",
-  terminal: "terminal",
-  git: "git",
 };
 
 export default function Workspace({ onClose }) {
@@ -32,9 +31,17 @@ export default function Workspace({ onClose }) {
     model: "",
     greenfieldTarget: "default",
     greenfieldTargetPath: "",
+    maxContextChars: 20000,
   });
 
-  const { sidebarView, setSidebarView, sidebarExpanded, setSidebarExpanded } = useSidebarState();
+  const {
+    sidebarView,
+    sidebarExpanded,
+    navigateSidebar,
+    openSidebarView,
+    toggleSidebarExpanded,
+    closeSidebarPanel,
+  } = useSidebarState();
 
   const runner = useProjectRunner();
 
@@ -58,7 +65,7 @@ export default function Workspace({ onClose }) {
   } = useChatSessions(project.selectedProject);
 
   const ollama = useOllamaStatus(chatSettings.model);
-  useRepositoryIntelligence(project.selectedProject);
+  const repository = useRepositoryIntelligence(project.selectedProject);
 
   useEffect(() => {
     if (project.workspaceKind !== "external" || !project.selectedProject) {
@@ -75,6 +82,8 @@ export default function Workspace({ onClose }) {
 
   const [chatSearchQuery, setChatSearchQuery] = useState("");
   const [fixPrompt, setFixPrompt] = useState("");
+  const [fixAutoRun, setFixAutoRun] = useState(false);
+  const [indexSearchResults, setIndexSearchResults] = useState([]);
   const activeSession = getActiveSession();
   const sessionMessages = activeSession?.messages || [DEFAULT_WELCOME];
   const visibleChatSessions = chatSearchQuery.trim()
@@ -119,17 +128,15 @@ export default function Workspace({ onClose }) {
 
   const handleNewChat = useCallback(() => {
     createSession("New Chat");
-    setSidebarView("chat");
-    setSidebarExpanded(true);
-  }, [createSession, setSidebarExpanded, setSidebarView]);
+    openSidebarView("chat");
+  }, [createSession, openSidebarView]);
 
   const handleSelectSession = useCallback(
     (sessionId) => {
       setActiveSessionId(sessionId);
-      setSidebarView("chat");
-      setSidebarExpanded(true);
+      openSidebarView("chat");
     },
-    [setActiveSessionId, setSidebarExpanded, setSidebarView]
+    [openSidebarView, setActiveSessionId]
   );
 
   const handleMessagesChange = useCallback(
@@ -151,29 +158,50 @@ export default function Workspace({ onClose }) {
   const handleActivityViewChange = useCallback(
     (viewId) => {
       setActivityView(viewId);
-      if (viewId === "explorer" || viewId === "terminal" || viewId === "git") {
-        setSidebarView(viewId);
+      if (viewId === "explorer") {
+        openSidebarView("explorer");
       }
     },
-    [setSidebarView]
+    [openSidebarView]
   );
 
   const handleSidebarNavigate = useCallback(
     (viewId) => {
-      if (sidebarView === viewId && sidebarExpanded) {
-        setSidebarExpanded(false);
-        return;
-      }
-
-      setSidebarView(viewId);
-      setSidebarExpanded(true);
-
+      navigateSidebar(viewId);
       if (SIDEBAR_TO_ACTIVITY[viewId]) {
         setActivityView(SIDEBAR_TO_ACTIVITY[viewId]);
       }
     },
-    [sidebarExpanded, sidebarView, setSidebarExpanded, setSidebarView]
+    [navigateSidebar]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    const query = searchQuery.trim();
+
+    if (!query || !project.selectedProject) {
+      setIndexSearchResults([]);
+      return undefined;
+    }
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const data = await searchProjectIndex(project.selectedProject, query, 8);
+        if (!cancelled) {
+          setIndexSearchResults(data.results || []);
+        }
+      } catch {
+        if (!cancelled) {
+          setIndexSearchResults([]);
+        }
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [project.selectedProject, searchQuery]);
 
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -190,7 +218,7 @@ export default function Workspace({ onClose }) {
           onSelect: () => {
             project.openProject(projectName);
             setActivityView("explorer");
-            setSidebarView("explorer");
+            openSidebarView("explorer");
           },
         });
       }
@@ -221,28 +249,53 @@ export default function Workspace({ onClose }) {
       }
     });
 
+    indexSearchResults.forEach((result) => {
+      results.push({
+        key: `index-${result.path}`,
+        label: result.path,
+        meta: `Symbol · ${result.score}`,
+        onSelect: () => {
+          setActivityView("editor");
+          project.openFile(result.path);
+        },
+      });
+    });
+
     return results.slice(0, 20);
-  }, [handleSelectSession, project, sessions, searchQuery, setSidebarView]);
+  }, [handleSelectSession, indexSearchResults, openSidebarView, project, sessions, searchQuery]);
 
   useEffect(() => {
     function onKeyDown(event) {
+      if (event.key === "Escape" && sidebarExpanded) {
+        event.preventDefault();
+        closeSidebarPanel();
+        return;
+      }
+
       if (event.target.matches("input, textarea, select") && !event.ctrlKey && !event.altKey) {
         return;
       }
 
-      if (event.ctrlKey && event.key.toLowerCase() === "b") {
+      if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "b") {
         event.preventDefault();
-        setSidebarExpanded((current) => !current);
+        toggleSidebarExpanded();
         return;
       }
 
-      if (event.altKey && event.key === ",") {
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        handleSidebarNavigate("explorer");
+        return;
+      }
+
+      if (event.ctrlKey && !event.shiftKey && event.key === ",") {
         event.preventDefault();
         handleSidebarNavigate("settings");
         return;
       }
 
       const navIndex = PRIMARY_NAV.findIndex((item) => {
+        if (!item.shortcut.startsWith("Alt+")) return false;
         const digit = item.shortcut.replace("Alt+", "");
         return event.altKey && event.key === digit;
       });
@@ -269,22 +322,23 @@ export default function Workspace({ onClose }) {
         event.preventDefault();
         handleSidebarNavigate(PRIMARY_NAV[focusedNavIndex].id);
       }
-
-      if (event.key === "Escape" && sidebarExpanded) {
-        setSidebarExpanded(false);
-      }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [focusedNavIndex, handleSidebarNavigate, setSidebarExpanded, sidebarExpanded]);
+  }, [
+    closeSidebarPanel,
+    focusedNavIndex,
+    handleSidebarNavigate,
+    sidebarExpanded,
+    toggleSidebarExpanded,
+  ]);
 
   async function handleProjectCreated(projectName) {
     await project.reloadProjects();
     await project.openProject(projectName);
     setActivityView("explorer");
-    setSidebarView("explorer");
-    setSidebarExpanded(true);
+    openSidebarView("explorer");
   }
 
   async function handleGenerationComplete({
@@ -310,8 +364,7 @@ export default function Workspace({ onClose }) {
     );
 
     setActivityView("explorer");
-    setSidebarView("explorer");
-    setSidebarExpanded(true);
+    openSidebarView("explorer");
 
     const firstFile =
       createdFiles.find((filePath) => filePath && /\.[a-z0-9]+$/i.test(filePath)) ||
@@ -346,9 +399,27 @@ export default function Workspace({ onClose }) {
 
   function handleFixTerminalIssue(prompt) {
     setFixPrompt(prompt);
-    setSidebarView("chat");
-    setSidebarExpanded(true);
+    setFixAutoRun(true);
+    openSidebarView("chat");
     handleChatSettingsChange({ agentMode: true, useWorkspaceContext: true });
+  }
+
+  async function handleEditComplete({ projectName, changedFiles, affectedFiles, rerunProject }) {
+    await project.refreshProjectFiles(
+      projectName,
+      `Applied ${changedFiles.length} AI edit(s) to the workspace.`
+    );
+    repository.refresh?.();
+
+    const firstFile = changedFiles[0] || affectedFiles[0];
+    if (firstFile) {
+      setActivityView("editor");
+      await project.openFile(firstFile);
+    }
+
+    if (rerunProject) {
+      await runner.runProject(projectName, project.setError);
+    }
   }
 
   function handleOpenFileFromChat(filePath) {
@@ -426,7 +497,6 @@ export default function Workspace({ onClose }) {
               disabled={!project.selectedProject}
               onClick={() => {
                 setActivityView("terminal");
-                setSidebarView("terminal");
                 runner.runProject(project.selectedProject, project.setError);
               }}
               type="button"
@@ -472,13 +542,9 @@ export default function Workspace({ onClose }) {
           }}
           onOpenGit={() => {
             setActivityView("git");
-            setSidebarView("git");
-            setSidebarExpanded(true);
           }}
           onOpenTerminal={() => {
             setActivityView("terminal");
-            setSidebarView("terminal");
-            setSidebarExpanded(true);
           }}
           onRename={project.renameSelectedPath}
           onRunProject={() => {
@@ -492,7 +558,6 @@ export default function Workspace({ onClose }) {
             setActivityView("explorer");
           }}
           onSelectSession={handleSelectSession}
-          onToggleExpanded={() => setSidebarExpanded((current) => !current)}
           projectRunning={runner.projectRunning}
           projects={project.projects}
           recentWorkspaces={project.recentWorkspaces}
@@ -517,18 +582,26 @@ export default function Workspace({ onClose }) {
               <ChatWorkspace
                 key={chatSessionKey}
                 chatSettings={chatSettings}
+                fixAutoRun={fixAutoRun}
                 initialMessages={sessionMessages}
                 ollamaStatus={ollama.status}
                 onAgentTaskChange={setAgentTask}
                 onChatSettingsChange={handleChatSettingsChange}
+                onEditComplete={handleEditComplete}
                 onFilesChanged={handleFilesChanged}
                 fixPrompt={fixPrompt}
-                onFixPromptConsumed={() => setFixPrompt("")}
+                onFixPromptConsumed={() => {
+                  setFixPrompt("");
+                  setFixAutoRun(false);
+                }}
                 onGenerationComplete={handleGenerationComplete}
                 onMessagesChange={handleMessagesChange}
                 onOpenFile={handleOpenFileFromChat}
                 onProjectCreated={handleProjectCreated}
                 onSessionTitleChange={handleSessionTitleChange}
+                repositoryIntelligence={repository.intelligence}
+                selectedFile={project.selectedFile}
+                selectedFolder={project.selectedFolder}
                 selectedProject={project.selectedProject}
                 sessionId={chatSessionKey}
                 workspaceKind={project.workspaceKind}
@@ -545,6 +618,9 @@ export default function Workspace({ onClose }) {
                 error={project.error}
                 files={project.files}
                 folders={project.folders}
+                intelligence={repository.intelligence}
+                intelligenceError={repository.error}
+                intelligenceLoading={repository.loading}
                 isDirty={project.isDirty}
                 loading={project.loading}
                 message={project.message}

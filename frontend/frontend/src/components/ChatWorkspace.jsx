@@ -7,15 +7,22 @@ import {
   planAgentFileActions,
   planNewProject,
   rejectReview,
+  searchProjectIndex,
   streamOllamaChat,
   startAutonomousAgentTask,
   stopAutonomousAgentTask,
 } from "../lib/api";
 import { logAgentDebug, logGeneration, extractCreatedFiles, recordGenerationStep, GENERATION_TAGS } from "../lib/agentDebug";
+import {
+  isFixErrorPrompt,
+  isRepositoryEditPrompt,
+  isRepositorySearchPrompt,
+} from "../lib/repositoryPrompts";
 import { TIMEOUTS, withTimeout } from "../lib/taskTimeout";
 import MarkdownMessage from "./workspace/MarkdownMessage";
 import { ReviewPlanPanel } from "./workspace/ReviewActionCard";
 import GenerationDiagnosticsPanel from "./workspace/GenerationDiagnosticsPanel";
+import RepositoryDiagnosticsPanel from "./workspace/RepositoryDiagnosticsPanel";
 
 function isGreenfieldPrompt(prompt, { selectedProject, workspaceKind } = {}) {
   const lowered = prompt.toLowerCase();
@@ -77,11 +84,15 @@ const DEFAULT_WELCOME = {
 
 export default function ChatWorkspace({
   selectedProject,
+  selectedFile = "",
+  selectedFolder = "",
   workspaceKind = "managed",
   workspacePath = "",
+  repositoryIntelligence = null,
   onFilesChanged,
   onProjectCreated,
   onGenerationComplete,
+  onEditComplete,
   onOpenFile,
   onAgentTaskChange,
   chatSettings,
@@ -89,6 +100,7 @@ export default function ChatWorkspace({
   ollamaStatus,
   sessionId,
   fixPrompt,
+  fixAutoRun = false,
   onFixPromptConsumed,
   initialMessages,
   onMessagesChange,
@@ -107,8 +119,10 @@ export default function ChatWorkspace({
   const [planMessage, setPlanMessage] = useState("");
   const [proposedProjectName, setProposedProjectName] = useState("");
   const [applying, setApplying] = useState(false);
+  const [repoDiagnostics, setRepoDiagnostics] = useState(null);
   const messagesRef = useRef(null);
   const taskPollRef = useRef(null);
+  const fixRunRef = useRef(false);
 
   const {
     agentMode,
@@ -117,6 +131,7 @@ export default function ChatWorkspace({
     model,
     greenfieldTarget = "default",
     greenfieldTargetPath = "",
+    maxContextChars = 20000,
   } = chatSettings;
 
   function buildOllamaErrorMessage() {
@@ -146,11 +161,20 @@ export default function ChatWorkspace({
   }
 
   useEffect(() => {
-    if (!fixPrompt?.trim()) return;
-    setInput(fixPrompt);
+    if (!fixAutoRun) {
+      fixRunRef.current = false;
+    }
+  }, [fixAutoRun]);
+
+  useEffect(() => {
+    if (!fixPrompt?.trim() || !fixAutoRun) return;
+    if (fixRunRef.current) return;
+    fixRunRef.current = true;
     onFixPromptConsumed?.();
-    setError("");
-  }, [fixPrompt, onFixPromptConsumed]);
+    queueMicrotask(() => {
+      sendMessageInternal({ preventDefault() {} }, fixPrompt);
+    });
+  }, [fixAutoRun, fixPrompt, onFixPromptConsumed]);
 
   useEffect(() => {
     if (initialMessages) {
@@ -285,14 +309,74 @@ export default function ChatWorkspace({
     }
   }
 
-  async function sendMessage(event) {
+  async function completeEditGeneration(plan, applyResult, assistantId, editDurationMs, promptText) {
+    const changedFiles = extractCreatedFiles(applyResult.results);
+    const affectedFiles = (plan.review_session?.previews || plan.previews || [])
+      .filter((action) => action.valid)
+      .map((action) => action.path || action.new_path)
+      .filter(Boolean);
+
+    setRepoDiagnostics((current) => ({
+      ...(plan.context?.diagnostics || current || {}),
+      files_edited: changedFiles.length,
+      edit_duration_ms: Math.round(editDurationMs),
+    }));
+
+    setMessages((currentMessages) =>
+      currentMessages.map((message) =>
+        message.id === assistantId
+          ? {
+              ...message,
+              content: `${plan.message}\n\n**${changedFiles.length} file(s)** updated.\n\nAffected files:\n${affectedFiles
+                .map((filePath) => `- \`${filePath}\``)
+                .join("\n")}`,
+            }
+          : message
+      )
+    );
+
+    setPlannedActions([]);
+    setChangeSummary(null);
+    setReviewSession(null);
+    setPlanMessage("");
+    setProposedProjectName("");
+
+    if (onEditComplete) {
+      await onEditComplete({
+        projectName: selectedProject,
+        changedFiles,
+        affectedFiles,
+        rerunProject: fixAutoRun || isFixErrorPrompt(promptText),
+      });
+    } else {
+      onFilesChanged?.();
+    }
+
+    const firstFile = changedFiles[0] || affectedFiles[0];
+    if (firstFile) {
+      await onOpenFile?.(firstFile);
+    }
+  }
+
+  async function sendMessage(event, promptOverride = null) {
+    return sendMessageInternal(event, promptOverride);
+  }
+
+  async function sendMessageInternal(event, promptOverride = null) {
     event.preventDefault();
 
-    const prompt = input.trim();
+    const prompt = (promptOverride || input).trim();
     if (!prompt || generating) return;
 
     const greenfieldRequest = isGreenfieldPrompt(prompt, { selectedProject, workspaceKind });
-    const useAgentPipeline = agentMode || greenfieldRequest;
+    const repositorySearch = isRepositorySearchPrompt(prompt) && Boolean(selectedProject);
+    const repositoryEdit =
+      isRepositoryEditPrompt(prompt) && Boolean(selectedProject) && !greenfieldRequest;
+    const useAgentPipeline =
+      agentMode ||
+      greenfieldRequest ||
+      repositoryEdit ||
+      (Boolean(selectedProject) && isFixErrorPrompt(prompt));
     const generationTarget = greenfieldRequest
       ? resolveGenerationTarget({
           selectedProject,
@@ -384,6 +468,34 @@ export default function ChatWorkspace({
     setGenerating(true);
 
     try {
+      if (repositorySearch) {
+        const searchData = await searchProjectIndex(selectedProject, prompt, 12);
+        const resultLines = (searchData.results || []).map(
+          (result) => `- \`${result.path}\` (score ${result.score})`
+        );
+        setMessages((currentMessages) =>
+          currentMessages.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content:
+                    resultLines.length > 0
+                      ? `Repository search results for **${prompt}**:\n\n${resultLines.join(
+                          "\n"
+                        )}\n\nClick a file path in Explorer or ask me to open one.`
+                      : `No indexed matches found for **${prompt}**.`,
+                }
+              : message
+          )
+        );
+        setRepoDiagnostics((current) => ({
+          ...current,
+          files_indexed: searchData.file_count,
+          symbols_indexed: searchData.symbol_count,
+        }));
+        return;
+      }
+
       if (useAgentPipeline) {
         if (agentMode && autonomousMode) {
           logAgentDebug("endpoint", { endpoint: "POST /agent/tasks" });
@@ -393,6 +505,10 @@ export default function ChatWorkspace({
             prompt,
             model: model.trim(),
             maxIterations: 3,
+            maxContextChars,
+            openedFile: selectedFile || undefined,
+            selectedFolder: selectedFolder || undefined,
+            autoApply: true,
           });
           setAgentTask(task);
           setMessages((currentMessages) =>
@@ -541,12 +657,19 @@ export default function ChatWorkspace({
           return;
         }
 
+        const shouldAutoApplyEdit = repositoryEdit || isFixErrorPrompt(prompt);
+        const editStarted = performance.now();
+
         const plan = selectedProject
           ? await planAgentFileActions({
               projectName: selectedProject,
               prompt,
               model: model.trim(),
-              useWorkspaceContext: useWorkspaceContext || workspaceKind === "external",
+              useWorkspaceContext: useWorkspaceContext || workspaceKind === "external" || repositoryEdit,
+              openedFile: selectedFile || undefined,
+              selectedFolder: selectedFolder || undefined,
+              maxContextChars,
+              autoApply: shouldAutoApplyEdit,
             })
           : await planNewProject({
               prompt,
@@ -567,8 +690,24 @@ export default function ChatWorkspace({
           auto_applied: plan.auto_applied,
         });
 
+        if (plan.context) {
+          setContextStatus(plan.context.status);
+          setContextFiles(plan.context.files || []);
+          setRepoDiagnostics(plan.context.diagnostics || null);
+        }
+
         if (plan.auto_applied && plan.apply_result) {
-          await completeGreenfieldGeneration(plan, plan.apply_result, assistantId);
+          if (plan.is_greenfield) {
+            await completeGreenfieldGeneration(plan, plan.apply_result, assistantId);
+          } else {
+            await completeEditGeneration(
+              plan,
+              plan.apply_result,
+              assistantId,
+              performance.now() - editStarted,
+              prompt
+            );
+          }
           return;
         }
 
@@ -577,11 +716,6 @@ export default function ChatWorkspace({
         setReviewSession(plan.review_session || null);
         setPlannedActions(plan.review_session?.previews || plan.previews || []);
         setChangeSummary(plan.change_summary || null);
-
-        if (plan.context) {
-          setContextStatus(plan.context.status);
-          setContextFiles(plan.context.files || []);
-        }
 
         const projectLabel = plan.proposed_project_name || selectedProject;
         setMessages((currentMessages) =>
@@ -618,10 +752,14 @@ export default function ChatWorkspace({
         model: model.trim(),
         projectName: selectedProject,
         useWorkspaceContext: useWorkspaceContext && Boolean(selectedProject),
+        openedFile: selectedFile || undefined,
+        selectedFolder: selectedFolder || undefined,
+        maxContextChars,
         onEvent: (payload) => {
           if (payload.type === "context") {
             setContextStatus(payload.status);
             setContextFiles(payload.files || []);
+            setRepoDiagnostics(payload.diagnostics || null);
           }
 
           if (payload.type === "token") {
@@ -897,6 +1035,10 @@ export default function ChatWorkspace({
 
       <form className="ws-composer" onSubmit={sendMessage}>
         <GenerationDiagnosticsPanel />
+        <RepositoryDiagnosticsPanel
+          diagnostics={repoDiagnostics}
+          intelligence={repositoryIntelligence}
+        />
 
         {!selectedProject && (
           <div className="ws-greenfield-hint">

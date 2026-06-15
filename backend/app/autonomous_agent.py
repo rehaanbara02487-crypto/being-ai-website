@@ -13,7 +13,9 @@ import uuid
 from app.agent_file_actions import plan_file_actions
 from app.config import get_settings
 from app.file_action_tools import apply_actions, preview_actions
-from app.repository_indexer import build_repository_context, should_skip_path
+from app.project_runner import detect_run_profile, run_install_if_needed
+from app.repository_context import get_repository_context_for_request
+from app.repository_indexer import should_skip_path
 
 
 TASKS: dict[str, dict] = {}
@@ -24,7 +26,17 @@ def get_agent_run_root() -> Path:
     return get_settings().beingai_workspace_root.parent / ".agent_runs"
 
 
-def create_task(project_name: str, prompt: str, model: str | None, max_iterations: int, max_context_chars: int | None) -> dict:
+def create_task(
+    project_name: str,
+    prompt: str,
+    model: str | None,
+    max_iterations: int,
+    max_context_chars: int | None,
+    *,
+    opened_file: str | None = None,
+    selected_folder: str | None = None,
+    auto_apply: bool = True,
+) -> dict:
     task_id = str(uuid.uuid4())
     task = {
         "id": task_id,
@@ -33,6 +45,9 @@ def create_task(project_name: str, prompt: str, model: str | None, max_iteration
         "model": model,
         "max_iterations": max(1, min(max_iterations, 6)),
         "max_context_chars": max_context_chars,
+        "opened_file": opened_file,
+        "selected_folder": selected_folder,
+        "auto_apply": auto_apply,
         "status": "queued",
         "current_step": "Queued",
         "iteration": 0,
@@ -117,8 +132,28 @@ def is_stopped(task: dict) -> bool:
         return bool(task["stopped"])
 
 
-def start_task(project_dir: Path, project_name: str, prompt: str, model: str | None, max_iterations: int, max_context_chars: int | None) -> dict:
-    task = create_task(project_name, prompt, model, max_iterations, max_context_chars)
+def start_task(
+    project_dir: Path,
+    project_name: str,
+    prompt: str,
+    model: str | None,
+    max_iterations: int,
+    max_context_chars: int | None,
+    *,
+    opened_file: str | None = None,
+    selected_folder: str | None = None,
+    auto_apply: bool = True,
+) -> dict:
+    task = create_task(
+        project_name,
+        prompt,
+        model,
+        max_iterations,
+        max_context_chars,
+        opened_file=opened_file,
+        selected_folder=selected_folder,
+        auto_apply=auto_apply,
+    )
     worker = threading.Thread(
         target=run_task,
         args=(task, project_dir),
@@ -149,29 +184,51 @@ def get_entrypoint(project_dir: Path) -> Path | None:
 
 
 def run_sandbox_project(task: dict, sandbox_dir: Path) -> tuple[int, str, str]:
-    entrypoint = get_entrypoint(sandbox_dir)
+    try:
+        profile = detect_run_profile(sandbox_dir)
+    except Exception as exc:  # noqa: BLE001 - fallback to python entrypoints
+        add_log(task, "stderr", f"{exc}\n")
+        profile = None
 
-    if not entrypoint:
-        return 1, "", "Project must contain main.py or app.py\n"
+    if profile and profile.get("type") == "npm":
+        try:
+            run_install_if_needed(sandbox_dir, profile, lambda stream, message: add_log(task, stream, message))
+        except Exception as exc:  # noqa: BLE001
+            return 1, "", f"{exc}\n"
 
-    add_log(task, "system", f"Running {entrypoint.name}\n")
+        add_log(task, "system", f"Running {profile['start_command']}\n")
+        process = subprocess.Popen(
+            profile["start_command"],
+            cwd=str(sandbox_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            shell=True,
+        )
+    else:
+        entrypoint = get_entrypoint(sandbox_dir)
+        if not entrypoint:
+            return 1, "", "Project must contain package.json or main.py/app.py\n"
 
-    process = subprocess.Popen(
-        [sys.executable, "-u", entrypoint.name],
-        cwd=str(sandbox_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-    )
+        add_log(task, "system", f"Running {entrypoint.name}\n")
+        process = subprocess.Popen(
+            [sys.executable, "-u", entrypoint.name],
+            cwd=str(sandbox_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
 
     try:
-        stdout, stderr = process.communicate(timeout=20)
+        stdout, stderr = process.communicate(timeout=25)
     except subprocess.TimeoutExpired:
         process.kill()
         stdout, stderr = process.communicate()
-        stderr = f"{stderr or ''}Run timed out after 20 seconds\n"
+        stderr = f"{stderr or ''}Run timed out after 25 seconds\n"
 
     if stdout:
         add_log(task, "stdout", stdout)
@@ -179,7 +236,7 @@ def run_sandbox_project(task: dict, sandbox_dir: Path) -> tuple[int, str, str]:
         add_log(task, "stderr", stderr)
 
     add_log(task, "system", f"Run exited with code {process.returncode}\n")
-    return process.returncode, stdout, stderr
+    return process.returncode, stdout or "", stderr or ""
 
 
 def safe_run_sandbox_project(task: dict, sandbox_dir: Path) -> tuple[int, str, str]:
@@ -317,15 +374,18 @@ def run_task(task: dict, project_dir: Path):
             if previous_error:
                 prompt = f"{prompt}\n\nPrevious run failed. Fix this error:\n{previous_error[-4000:]}"
 
-            context = build_repository_context(
+            context_payload = get_repository_context_for_request(
                 sandbox_dir,
+                task["project_name"],
                 prompt,
-                max_chars=task["max_context_chars"] or get_settings().ollama_context_char_limit,
+                task["max_context_chars"] or get_settings().ollama_context_char_limit,
+                opened_file=task.get("opened_file"),
+                selected_folder=task.get("selected_folder"),
             )
             plan = plan_file_actions(
                 sandbox_dir,
                 prompt,
-                repository_context=context["context"],
+                repository_context=context_payload["context"],
                 model=task["model"],
             )
             valid_actions = [

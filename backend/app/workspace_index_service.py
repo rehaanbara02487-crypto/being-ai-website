@@ -142,11 +142,24 @@ def get_or_build_index(project_dir: Path, project_name: str, *, force: bool = Fa
 
 
 def search_workspace_index(index: dict, query: str, *, limit: int = 25) -> list[dict]:
+    lowered_query = query.lower()
+    semantic_terms: set[str] = set()
+
+    if any(token in lowered_query for token in ("auth", "login", "signin", "signup", "session")):
+        semantic_terms.update({"auth", "authentication", "login", "session", "jwt", "oauth"})
+    if any(token in lowered_query for token in ("route", "routes", "api", "endpoint", "controller")):
+        semantic_terms.update({"route", "router", "api", "controller", "endpoint", "views"})
+    if any(token in lowered_query for token in ("model", "models", "database", "schema", "entity")):
+        semantic_terms.update({"model", "models", "schema", "entity", "database", "sqlalchemy"})
+    if "unused" in lowered_query:
+        semantic_terms.update({"unused", "dead", "deprecated"})
+
     terms = {
         term.lower()
         for term in re.findall(r"[a-zA-Z0-9_]+", query)
         if len(term) > 2
     }
+    terms.update(semantic_terms)
     if not terms:
         return []
 
@@ -169,3 +182,9 @@ def search_workspace_index(index: dict, query: str, *, limit: int = 25) -> list[
 
     results.sort(key=lambda item: (-item["score"], item["path"]))
     return results[:limit]
+
+
+def invalidate_workspace_index(project_name: str) -> None:
+    cache_file = _cache_path(project_name)
+    if cache_file.exists():
+        cache_file.unlink(missing_ok=True)

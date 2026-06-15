@@ -2,18 +2,17 @@ import FileExplorer from "./workspace/FileExplorer";
 import IconTooltip from "./workspace/IconTooltip";
 
 const PRIMARY_NAV = [
-  { id: "explorer", icon: "▤", label: "Explorer", shortcut: "Alt+1" },
+  { id: "explorer", icon: "▤", label: "Explorer", shortcut: "Ctrl+Shift+E" },
   { id: "chat", icon: "✦", label: "Chat", shortcut: "Alt+2" },
   { id: "search", icon: "⌕", label: "Search", shortcut: "Alt+3" },
-  { id: "terminal", icon: "▣", label: "Terminal", shortcut: "Alt+4" },
-  { id: "git", icon: "⎇", label: "Source Control", shortcut: "Alt+5" },
+  { id: "agent", icon: "◎", label: "Agent", shortcut: "Alt+4" },
+  { id: "settings", icon: "⚙", label: "Settings", shortcut: "Ctrl+," },
 ];
 
 export default function Sidebar({
   activeView,
   expanded,
   onNavigate,
-  onToggleExpanded,
   onFocusNav,
   navButtonRefs,
   projects,
@@ -49,11 +48,6 @@ export default function Sidebar({
   agentTask,
   chatSettings,
   onChatSettingsChange,
-  runStatus,
-  projectRunning,
-  onRunProject,
-  onOpenTerminal,
-  onOpenGit,
 }) {
   function renderPanelBody() {
     switch (activeView) {
@@ -184,16 +178,6 @@ export default function Sidebar({
             ) : (
               <div className="ws-empty-inline">No saved chats for this workspace yet.</div>
             )}
-
-            {agentTask && (
-              <>
-                <div className="ws-sidebar-section-label">Agent Task</div>
-                <div className="ws-agent-task-card">
-                  <strong>{agentTask.status}</strong>
-                  <span>{agentTask.current_step}</span>
-                </div>
-              </>
-            )}
           </>
         );
 
@@ -230,44 +214,29 @@ export default function Sidebar({
           </>
         );
 
-      case "terminal":
+      case "agent":
         return (
-          <div className="ws-sidebar-context-card">
-            <strong>Terminal</strong>
-            <p className="ws-muted-copy">
-              Run output appears in the editor panel terminal dock.
-            </p>
-            <div className="ws-status-row">
-              <span>Status:</span>
-              <span className={projectRunning ? "ws-status ws-status-running" : "ws-status"}>
-                {runStatus}
-              </span>
+          <>
+            <div className="ws-sidebar-section-label">Agent Tasks</div>
+            {agentTask ? (
+              <div className="ws-agent-task-card">
+                <strong>{agentTask.status}</strong>
+                <span>{agentTask.current_step}</span>
+                {agentTask.iteration ? <span>Iteration {agentTask.iteration}</span> : null}
+              </div>
+            ) : (
+              <div className="ws-empty-inline">
+                Enable Agent Mode in Settings, then send an edit prompt from Chat to start a task.
+              </div>
+            )}
+            <div className="ws-sidebar-context-card" style={{ marginTop: "12px" }}>
+              <strong>Autonomous edits</strong>
+              <p className="ws-muted-copy">
+                Prompts like “Add dark mode”, “Fix build errors”, or “Add pagination” analyze the
+                repository, plan multi-file edits, and apply them automatically.
+              </p>
             </div>
-            <button className="ws-btn ws-full-width" onClick={onOpenTerminal} type="button">
-              Open Terminal Panel
-            </button>
-            <button
-              className="ws-btn ws-btn-primary ws-full-width"
-              disabled={!selectedProject || projectRunning}
-              onClick={onRunProject}
-              type="button"
-            >
-              Run Project
-            </button>
-          </div>
-        );
-
-      case "git":
-        return (
-          <div className="ws-sidebar-context-card">
-            <strong>Source Control</strong>
-            <p className="ws-muted-copy">
-              Review changes, commit, and restore from the Git panel on the right.
-            </p>
-            <button className="ws-btn ws-btn-primary ws-full-width" onClick={onOpenGit} type="button">
-              Open Source Control
-            </button>
-          </div>
+          </>
         );
 
       case "settings":
@@ -384,14 +353,13 @@ export default function Sidebar({
     }
   }
 
-  const activeLabel =
-    PRIMARY_NAV.find((item) => item.id === activeView)?.label ||
-    (activeView === "settings" ? "Settings" : "Navigation");
+  const activeLabel = PRIMARY_NAV.find((item) => item.id === activeView)?.label || "Navigation";
+  const panelOpen = expanded && Boolean(activeView);
 
   return (
     <aside
       aria-label="Workspace navigation"
-      className={`ws-sidebar-shell ${expanded ? "expanded" : "collapsed"}`}
+      className={`ws-sidebar-shell ${panelOpen ? "expanded" : "collapsed"}`}
     >
       <div className="ws-sidebar-rail" role="toolbar">
         {PRIMARY_NAV.map((item, index) => (
@@ -402,6 +370,7 @@ export default function Sidebar({
               }}
               aria-current={activeView === item.id ? "page" : undefined}
               aria-label={item.label}
+              aria-pressed={activeView === item.id}
               className={`ws-sidebar-nav-btn ${activeView === item.id ? "active" : ""}`}
               onClick={() => onNavigate(item.id)}
               onFocus={() => onFocusNav?.(index)}
@@ -411,39 +380,25 @@ export default function Sidebar({
             </button>
           </IconTooltip>
         ))}
-
-        <div className="ws-sidebar-rail-footer">
-          <IconTooltip label="Settings" shortcut="Alt+,">
-            <button
-              aria-current={activeView === "settings" ? "page" : undefined}
-              aria-label="Settings"
-              className={`ws-sidebar-nav-btn ${activeView === "settings" ? "active" : ""}`}
-              onClick={() => onNavigate("settings")}
-              type="button"
-            >
-              ⚙
-            </button>
-          </IconTooltip>
-          <IconTooltip label={expanded ? "Collapse sidebar" : "Expand sidebar"} shortcut="Ctrl+B">
-            <button
-              aria-expanded={expanded}
-              aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
-              className="ws-sidebar-nav-btn"
-              onClick={onToggleExpanded}
-              type="button"
-            >
-              {expanded ? "‹" : "›"}
-            </button>
-          </IconTooltip>
-        </div>
       </div>
 
       <div
-        aria-hidden={!expanded}
-        className={`ws-sidebar-expanded-panel ${expanded ? "open" : ""}`}
+        aria-hidden={!panelOpen}
+        className={`ws-sidebar-expanded-panel ${panelOpen ? "open" : ""}`}
       >
         <div className="ws-sidebar-panel">
-          <div className="ws-sidebar-panel-header">{activeLabel}</div>
+          <div className="ws-sidebar-panel-header">
+            {activeView === "settings" && (
+              <button
+                className="ws-sidebar-back-btn"
+                onClick={() => onNavigate("explorer")}
+                type="button"
+              >
+                ← Back to Explorer
+              </button>
+            )}
+            <span>{activeLabel}</span>
+          </div>
           <div className="ws-sidebar-panel-body">{renderPanelBody()}</div>
         </div>
       </div>

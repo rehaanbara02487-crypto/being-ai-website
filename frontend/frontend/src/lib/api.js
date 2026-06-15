@@ -218,6 +218,9 @@ export async function streamOllamaChat({
   model,
   projectName,
   useWorkspaceContext,
+  openedFile,
+  selectedFolder,
+  maxContextChars,
   onEvent,
 }) {
   const response = await fetch(`${API_BASE_URL}/ollama/chat/stream`, {
@@ -230,6 +233,9 @@ export async function streamOllamaChat({
       model: model || undefined,
       project_name: projectName || undefined,
       use_workspace_context: Boolean(useWorkspaceContext),
+      opened_file: openedFile || undefined,
+      selected_folder: selectedFolder || undefined,
+      max_context_chars: maxContextChars || undefined,
     }),
   });
 
@@ -272,6 +278,10 @@ export function planAgentFileActions({
   prompt,
   model,
   useWorkspaceContext,
+  openedFile,
+  selectedFolder,
+  maxContextChars,
+  autoApply = false,
 }) {
   return request("/agent/file-actions/plan", {
     method: "POST",
@@ -280,6 +290,10 @@ export function planAgentFileActions({
       prompt,
       model: model || undefined,
       use_workspace_context: Boolean(useWorkspaceContext),
+      opened_file: openedFile || undefined,
+      selected_folder: selectedFolder || undefined,
+      max_context_chars: maxContextChars || undefined,
+      auto_apply: Boolean(autoApply),
     }),
   });
 }
@@ -343,6 +357,10 @@ export function startAutonomousAgentTask({
   prompt,
   model,
   maxIterations = 3,
+  maxContextChars,
+  openedFile,
+  selectedFolder,
+  autoApply = true,
 }) {
   return request("/agent/tasks", {
     method: "POST",
@@ -351,6 +369,10 @@ export function startAutonomousAgentTask({
       prompt,
       model: model || undefined,
       max_iterations: maxIterations,
+      max_context_chars: maxContextChars || undefined,
+      opened_file: openedFile || undefined,
+      selected_folder: selectedFolder || undefined,
+      auto_apply: Boolean(autoApply),
     }),
   });
 }

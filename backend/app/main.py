@@ -32,8 +32,9 @@ from app.workspace_registry import (
     touch_workspace,
 )
 from app.repository_indexer import build_repository_context, should_skip_path
+from app.repository_context import get_repository_context_for_request, invalidate_workspace_index
 from app.workspace_intelligence import scan_repository
-from app.workspace_index_service import get_or_build_index, search_workspace_index
+from app.workspace_index_service import build_workspace_index, get_or_build_index, search_workspace_index
 from app.git_intelligence import explain_changes_for_pr, suggest_commit_message, summarize_diff
 from app.terminal_intelligence import analyze_terminal_logs
 from app.review_sessions import (
@@ -162,52 +163,23 @@ def get_run_info(project_name: str):
     }
 
 
-def get_repository_context_for_request(project_name: str, prompt: str, max_context_chars: int | None):
+def build_project_context_payload(
+    project_name: str,
+    prompt: str,
+    max_context_chars: int | None,
+    *,
+    opened_file: str | None = None,
+    selected_folder: str | None = None,
+):
     project_dir = get_project_dir(project_name)
-    context_limit = max_context_chars or get_settings().ollama_context_char_limit
-
-    git_status_payload = {}
-    try:
-        git_service.ensure_git_repo(project_dir)
-        git_status_payload = {
-            "branch": git_service.current_branch(project_dir),
-            "changes": git_service.status(project_dir).get("changes", []),
-        }
-    except GitServiceError:
-        pass
-
-    intelligence = scan_repository(project_dir, git_status=git_status_payload)
-    index = get_or_build_index(project_dir, project_name)
-    search_hits = search_workspace_index(index, prompt, limit=12)
-
-    context_payload = build_repository_context(
+    return get_repository_context_for_request(
         project_dir,
+        project_name,
         prompt,
-        max_chars=context_limit,
+        max_context_chars,
+        opened_file=opened_file,
+        selected_folder=selected_folder,
     )
-
-    index_section = "\n".join(
-        f"- {hit['path']} (score {hit['score']})"
-        for hit in search_hits
-    ) or "(no direct index matches)"
-
-    context_payload["intelligence"] = intelligence
-    context_payload["index"] = {
-        "file_count": index.get("file_count", 0),
-        "symbol_count": index.get("symbol_count", 0),
-        "search_hits": search_hits,
-    }
-    context_payload["context"] = (
-        "REPOSITORY SUMMARY:\n"
-        f"{intelligence['summary']}\n\n"
-        "INDEX SEARCH MATCHES:\n"
-        f"{index_section}\n\n"
-        f"{context_payload['context']}"
-    )
-    context_payload["status"] = (
-        f"{context_payload['status']} Repository intelligence loaded."
-    )
-    return context_payload
 
 
 def git_project_dir(project_name: str) -> Path:
@@ -273,10 +245,12 @@ async def ollama_chat_stream(request: OllamaChatRequest):
         if not request.project_name:
             raise HTTPException(status_code=400, detail="Project name is required for workspace context")
 
-        context_payload = get_repository_context_for_request(
+        context_payload = build_project_context_payload(
             request.project_name,
             request.prompt,
             request.max_context_chars,
+            opened_file=request.opened_file,
+            selected_folder=request.selected_folder,
         )
         repository_context = context_payload["context"]
 
@@ -418,10 +392,12 @@ async def plan_agent_file_actions(request: AgentFileActionPlanRequest):
     repository_context = None
 
     if request.use_workspace_context:
-        context_payload = get_repository_context_for_request(
+        context_payload = build_project_context_payload(
             request.project_name,
             request.prompt,
             request.max_context_chars,
+            opened_file=request.opened_file,
+            selected_folder=request.selected_folder,
         )
         repository_context = context_payload["context"]
 
@@ -439,7 +415,7 @@ async def plan_agent_file_actions(request: AgentFileActionPlanRequest):
 
     review_session = create_review_session(request.project_name, request.prompt, plan)
 
-    return {
+    response = {
         **plan,
         "review_session": review_session,
         "review_session_id": review_session["id"],
@@ -450,6 +426,17 @@ async def plan_agent_file_actions(request: AgentFileActionPlanRequest):
         },
     }
 
+    if request.auto_apply and review_session.get("id"):
+        apply_result = await apply_agent_review_actions(
+            review_session["id"],
+            ReviewApplyRequest(action_ids=None),
+        )
+        response["apply_result"] = apply_result
+        response["auto_applied"] = True
+        invalidate_workspace_index(request.project_name)
+
+    return response
+
 
 @app.post("/agent/file-actions/apply")
 async def apply_agent_file_actions(request: AgentFileActionApplyRequest):
@@ -459,6 +446,8 @@ async def apply_agent_file_actions(request: AgentFileActionApplyRequest):
         results = apply_actions(project_dir, request.actions)
     except FileActionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    invalidate_workspace_index(request.project_name)
 
     return {
         "status": "applied",
@@ -544,6 +533,7 @@ async def apply_agent_review_actions(review_id: str, request: ReviewApplyRequest
         if preview.get("status") == "pending" and preview.get("valid")
     ]
     updated_review = mark_actions(review_id, action_ids, "applied")
+    invalidate_workspace_index(review["project_name"])
 
     return {
         "status": "applied",
@@ -583,6 +573,9 @@ async def start_autonomous_agent_task(request: AutonomousAgentStartRequest):
         request.model,
         request.max_iterations,
         request.max_context_chars,
+        opened_file=request.opened_file,
+        selected_folder=request.selected_folder,
+        auto_apply=request.auto_apply,
     )
 
 
@@ -741,6 +734,8 @@ async def get_project_files(project_name: str):
 
 @app.get("/projects/{project_name}/intelligence")
 async def get_project_intelligence(project_name: str):
+    import time
+
     project_dir = get_project_dir(project_name)
     git_status_payload = {}
     try:
@@ -751,7 +746,23 @@ async def get_project_intelligence(project_name: str):
         }
     except GitServiceError:
         pass
-    return scan_repository(project_dir, git_status=git_status_payload)
+
+    started = time.perf_counter()
+    index = get_or_build_index(project_dir, project_name)
+    index_duration_ms = round((time.perf_counter() - started) * 1000, 1)
+    intelligence = scan_repository(
+        project_dir,
+        git_status=git_status_payload,
+        index=index,
+        index_duration_ms=index_duration_ms,
+    )
+    intelligence["index"] = {
+        "file_count": index.get("file_count", 0),
+        "symbol_count": index.get("symbol_count", 0),
+        "built_at": index.get("built_at"),
+        "index_duration_ms": index_duration_ms,
+    }
+    return intelligence
 
 
 @app.post("/projects/{project_name}/index/rebuild")

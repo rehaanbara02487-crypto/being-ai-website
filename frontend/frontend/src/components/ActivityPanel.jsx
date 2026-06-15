@@ -6,6 +6,8 @@ import FileExplorer from "./workspace/FileExplorer";
 import IconTooltip from "./workspace/IconTooltip";
 import TerminalView from "./workspace/TerminalView";
 
+import RepositorySummaryPanel from "./workspace/RepositorySummaryPanel";
+
 const ACTIVITY_ITEMS = [
   { id: "explorer", icon: "▤", label: "Explorer", shortcut: "Ctrl+Shift+E" },
   { id: "editor", icon: "{ }", label: "Editor", shortcut: "Ctrl+Shift+D" },
@@ -44,6 +46,9 @@ export default function ActivityPanel({
   onRun,
   onStop,
   onWorkspaceChanged,
+  intelligence,
+  intelligenceLoading,
+  intelligenceError,
 }) {
   function renderMainContent() {
     if (activeView === "explorer") {
@@ -52,6 +57,12 @@ export default function ActivityPanel({
           <Panel defaultSize={28} id="explorer-sidebar" maxSize={40} minSize={18}>
             <div className="ws-activity-sidebar">
               <div className="ws-activity-sidebar-header">Explorer</div>
+              <RepositorySummaryPanel
+                error={intelligenceError}
+                intelligence={intelligence}
+                loading={intelligenceLoading}
+                onOpenFile={onOpenFile}
+              />
               <div className="ws-sidebar-panel-body">
                 <FileExplorer
                   files={files}
