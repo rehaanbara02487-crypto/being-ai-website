@@ -1,5 +1,33 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || "/api";
 
+const AGENT_ENDPOINTS = new Set([
+  "/agent/projects/plan",
+  "/agent/file-actions/plan",
+  "/agent/file-actions/apply",
+]);
+
+function formatApiError(data, status) {
+  if (data?.error) {
+    return data.error;
+  }
+
+  if (typeof data?.detail === "string") {
+    return data.detail;
+  }
+
+  if (Array.isArray(data?.detail)) {
+    return data.detail
+      .map((item) => item?.msg || item?.message || JSON.stringify(item))
+      .join("; ");
+  }
+
+  if (data?.detail) {
+    return String(data.detail);
+  }
+
+  return `Request failed with status ${status}`;
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {
@@ -9,10 +37,26 @@ async function request(path, options = {}) {
     ...options,
   });
 
-  const data = await response.json();
+  const rawBody = await response.text();
+  let data = {};
+
+  if (rawBody) {
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      throw new Error(rawBody || `Request failed with status ${response.status}`);
+    }
+  }
+
+  if (AGENT_ENDPOINTS.has(path) || path.startsWith("/agent/reviews/")) {
+    console.info(`[BEING AI Agent] api ${options.method || "GET"} ${path}`, {
+      ok: response.ok,
+      status: response.status,
+    });
+  }
 
   if (!response.ok || data.error) {
-    throw new Error(data.error || data.detail || `Request failed with status ${response.status}`);
+    throw new Error(formatApiError(data, response.status));
   }
 
   return data;
@@ -20,6 +64,32 @@ async function request(path, options = {}) {
 
 export function listProjects() {
   return request("/projects");
+}
+
+export function listWorkspaces() {
+  return request("/workspaces");
+}
+
+export function openWorkspace({ path, name }) {
+  return request("/workspaces/open", {
+    method: "POST",
+    body: JSON.stringify({
+      path,
+      name: name || undefined,
+    }),
+  });
+}
+
+export function pickWorkspaceFolder() {
+  return request("/workspaces/pick-folder", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function getOllamaStatus(model) {
+  const params = model ? `?model=${encodeURIComponent(model)}` : "";
+  return request(`/ollama/status${params}`);
 }
 
 export function getProject(projectName) {
@@ -169,7 +239,16 @@ export function planAgentFileActions({
   });
 }
 
-export function planNewProject({ prompt, projectName, model, stack }) {
+export function planNewProject({
+  prompt,
+  projectName,
+  model,
+  stack,
+  target = "default",
+  targetPath,
+  currentWorkspace,
+  autoApply = false,
+}) {
   return request("/agent/projects/plan", {
     method: "POST",
     body: JSON.stringify({
@@ -177,6 +256,10 @@ export function planNewProject({ prompt, projectName, model, stack }) {
       project_name: projectName || undefined,
       model: model || undefined,
       stack: stack || undefined,
+      target,
+      target_path: targetPath || undefined,
+      current_workspace: currentWorkspace || undefined,
+      auto_apply: autoApply,
     }),
   });
 }

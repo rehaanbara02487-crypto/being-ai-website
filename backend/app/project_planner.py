@@ -79,15 +79,32 @@ def derive_project_slug(prompt: str, proposed_name: str | None = None) -> str:
 
 def is_greenfield_prompt(prompt: str) -> bool:
     lowered = prompt.lower()
-    triggers = ("build ", "create ", "make ", "generate ", "scaffold ", "new ")
-    targets = (" app", " application", " project", " api", " website", " todo", " react", " flask")
-    return any(lowered.startswith(t) or t in lowered for t in triggers) and any(
-        target in lowered for target in targets
+    triggers = ("build ", "create ", "make ", "generate ", "scaffold ", "new ", "add ")
+    targets = (
+        " app",
+        " application",
+        " project",
+        " api",
+        " website",
+        " todo",
+        " react",
+        " flask",
+        " portfolio",
+    )
+    in_place = (" this folder", " in here", " here")
+    return (
+        any(lowered.startswith(trigger) or trigger in lowered for trigger in triggers)
+        and (
+            any(target in lowered for target in targets)
+            or any(marker in lowered for marker in in_place)
+        )
     )
 
 
-def planning_project_dir(project_name: str) -> Path:
+def planning_project_dir(project_name: str, project_dir: Path | None = None) -> Path:
     ensure_project_name_safe(project_name)
+    if project_dir is not None:
+        return project_dir
     return get_workspace_root() / project_name
 
 
@@ -221,6 +238,10 @@ def plan_new_project(
     model: str | None = None,
     project_name: str | None = None,
     stack: str | None = None,
+    *,
+    target: str = "default",
+    target_path: str | None = None,
+    current_workspace: str | None = None,
 ) -> dict:
     scaffold = plan_scaffold(prompt, model, stack, project_name)
     template = get_template(scaffold["stack"])
@@ -237,7 +258,15 @@ def plan_new_project(
         batches.append(generate_tool_calls_for_batch(prompt, scaffold, file_batch, model))
 
     tool_calls = merge_tool_calls(scaffold, batches)
-    project_dir = planning_project_dir(scaffold["project_name"])
+
+    from app.workspace_registry import resolve_greenfield_target
+
+    project_dir, workspace_meta = resolve_greenfield_target(
+        target,
+        target_path=target_path,
+        current_project_slug=current_workspace,
+        project_name=scaffold["project_name"],
+    )
     previews = preview_actions(project_dir, tool_calls)
 
     plan = {
@@ -248,6 +277,11 @@ def plan_new_project(
         "requires_approval": True,
         "is_greenfield": True,
         "proposed_project_name": scaffold["project_name"],
+        "workspace_slug": workspace_meta["slug"],
+        "workspace_path": workspace_meta["path"],
+        "workspace_kind": workspace_meta["kind"],
+        "greenfield_target": target,
+        "generate_in_place": target == "in_place",
         "stack": scaffold["stack"],
         "run_profile": template["run_profile"],
         "scaffold": {

@@ -11,32 +11,76 @@ import {
   startAutonomousAgentTask,
   stopAutonomousAgentTask,
 } from "../lib/api";
+import { logAgentDebug, logGeneration, extractCreatedFiles } from "../lib/agentDebug";
 import MarkdownMessage from "./workspace/MarkdownMessage";
 import { ReviewPlanPanel } from "./workspace/ReviewActionCard";
 
-function isGreenfieldPrompt(prompt) {
+function isGreenfieldPrompt(prompt, { selectedProject, workspaceKind } = {}) {
   const lowered = prompt.toLowerCase();
-  return (
-    /\b(build|create|make|generate|scaffold|new)\b/.test(lowered) &&
-    /\b(app|application|project|api|website|todo|react|flask|fastapi)\b/.test(lowered)
-  );
+  const hasVerb = /\b(build|create|make|generate|scaffold|new|add)\b/.test(lowered);
+  const hasTarget =
+    /\b(app|application|project|api|website|todo|react|flask|fastapi|portfolio)\b/.test(lowered);
+  const inThisFolder = /\b(this folder|in here|here)\b/.test(lowered);
+
+  if (hasVerb && (hasTarget || inThisFolder)) {
+    return true;
+  }
+
+  if (workspaceKind === "external" && selectedProject && hasVerb) {
+    return true;
+  }
+
+  return false;
+}
+
+function resolveGenerationTarget({
+  selectedProject,
+  workspaceKind,
+  greenfieldTarget,
+  prompt,
+}) {
+  if (selectedProject && workspaceKind === "external") {
+    return "in_place";
+  }
+
+  if (selectedProject && /\b(this folder|in here|here)\b/i.test(prompt)) {
+    return "in_place";
+  }
+
+  if (greenfieldTarget === "current" && selectedProject) {
+    return workspaceKind === "external" ? "in_place" : "current";
+  }
+
+  if (greenfieldTarget === "custom") {
+    return "custom";
+  }
+
+  if (greenfieldTarget === "in_place" && selectedProject) {
+    return "in_place";
+  }
+
+  return "default";
 }
 
 const DEFAULT_WELCOME = {
   id: "welcome",
   role: "assistant",
   content:
-    "Ask BEING AI to build a project. Example: **Build a modern React Todo App**.\n\nEnable **Agent Mode** in Settings to scaffold greenfield projects or review file changes before applying.",
+    "Ask BEING AI to build a project. Example: **Build a modern React Todo App**.\n\nGreenfield build prompts route to the project planner automatically. Enable **Agent Mode** in Settings for in-project file edits with review.",
 };
 
 export default function ChatWorkspace({
   selectedProject,
+  workspaceKind = "managed",
+  workspacePath = "",
   onFilesChanged,
   onProjectCreated,
+  onGenerationComplete,
   onOpenFile,
   onAgentTaskChange,
   chatSettings,
   onChatSettingsChange,
+  ollamaStatus,
   sessionId,
   initialMessages,
   onMessagesChange,
@@ -63,7 +107,35 @@ export default function ChatWorkspace({
     autonomousMode,
     useWorkspaceContext,
     model,
+    greenfieldTarget = "default",
+    greenfieldTargetPath = "",
   } = chatSettings;
+
+  function buildOllamaErrorMessage() {
+    if (!ollamaStatus) {
+      return "Unable to verify Ollama status.";
+    }
+
+    const lines = [ollamaStatus.message || "Ollama is unavailable."];
+    if (ollamaStatus.base_url) {
+      lines.push(`Endpoint: ${ollamaStatus.base_url}`);
+    }
+    if (ollamaStatus.model) {
+      lines.push(`Expected model: ${ollamaStatus.model}`);
+    }
+    if (ollamaStatus.models?.length) {
+      lines.push(`Installed models: ${ollamaStatus.models.join(", ")}`);
+    } else if (ollamaStatus.online) {
+      lines.push("No models are installed. Run `ollama pull <model>`.");
+    } else {
+      lines.push("Start Ollama, then verify OLLAMA_BASE_URL in backend settings.");
+    }
+    return lines.join("\n");
+  }
+
+  function ollamaReady() {
+    return Boolean(ollamaStatus?.online && ollamaStatus?.model_available);
+  }
 
   useEffect(() => {
     if (initialMessages) {
@@ -147,12 +219,87 @@ export default function ChatWorkspace({
     }, 1000);
   }
 
+  async function completeGreenfieldGeneration(plan, applyResult, assistantId) {
+    const createdFiles = extractCreatedFiles(applyResult.results);
+    const projectName = applyResult.project_name || selectedProject;
+    const inPlace = Boolean(plan.generate_in_place || plan.greenfield_target === "in_place");
+
+    logGeneration("files", {
+      projectName,
+      workspacePath: applyResult.workspace_path || plan.workspace_path || workspacePath,
+      createdFiles,
+      count: createdFiles.length,
+    });
+
+    setMessages((currentMessages) =>
+      currentMessages.map((message) =>
+        message.id === assistantId
+          ? {
+              ...message,
+              content: inPlace
+                ? `${plan.message}\n\n**${createdFiles.length} file(s)** written to the open workspace folder.`
+                : `${plan.message}\n\nProject **${projectName}** was created with **${createdFiles.length} file(s)**.`,
+            }
+          : message
+      )
+    );
+
+    setPlannedActions([]);
+    setChangeSummary(null);
+    setReviewSession(null);
+    setPlanMessage("");
+    setProposedProjectName("");
+
+    if (onGenerationComplete) {
+      await onGenerationComplete({
+        projectName,
+        createdFiles,
+        workspacePath: applyResult.workspace_path || plan.workspace_path || workspacePath,
+        inPlace,
+      });
+    } else if (applyResult.is_greenfield && projectName) {
+      await onProjectCreated?.(projectName);
+    } else {
+      onFilesChanged?.();
+    }
+  }
+
   async function sendMessage(event) {
     event.preventDefault();
 
     const prompt = input.trim();
     if (!prompt || generating) return;
-    if (agentMode && autonomousMode && !selectedProject) {
+
+    const greenfieldRequest = isGreenfieldPrompt(prompt, { selectedProject, workspaceKind });
+    const useAgentPipeline = agentMode || greenfieldRequest;
+    const generationTarget = greenfieldRequest
+      ? resolveGenerationTarget({
+          selectedProject,
+          workspaceKind,
+          greenfieldTarget,
+          prompt,
+        })
+      : greenfieldTarget;
+
+    if (greenfieldRequest && generationTarget === "custom" && !greenfieldTargetPath.trim()) {
+      setError("Choose a custom target folder in Settings before generating.");
+      return;
+    }
+    if (
+      greenfieldRequest &&
+      (generationTarget === "current" || generationTarget === "in_place") &&
+      !selectedProject
+    ) {
+      setError("Open a workspace folder first, or switch generation target to Default workspace.");
+      return;
+    }
+
+    if (!ollamaReady()) {
+      setError(buildOllamaErrorMessage());
+      return;
+    }
+
+    if (useAgentPipeline && autonomousMode && !selectedProject) {
       setError("Select a project before using Autonomous Mode.");
       return;
     }
@@ -160,6 +307,13 @@ export default function ChatWorkspace({
       setError('Use a build/create prompt (e.g. "Build a modern React Todo App") or select a project.');
       return;
     }
+
+    logAgentDebug("incoming-prompt", {
+      prompt,
+      agentMode,
+      greenfieldRequest,
+      selectedProject: selectedProject || null,
+    });
 
     const userMessage = {
       id: `user-${Date.now()}`,
@@ -183,15 +337,17 @@ export default function ChatWorkspace({
     setAgentTask(null);
     setContextFiles([]);
     setContextStatus(
-      useWorkspaceContext
+      useWorkspaceContext || workspaceKind === "external"
         ? `Indexing ${selectedProject || "workspace"}...`
         : "Workspace context off"
     );
     setGenerating(true);
 
     try {
-      if (agentMode) {
-        if (autonomousMode) {
+      if (useAgentPipeline) {
+        if (agentMode && autonomousMode) {
+          logAgentDebug("endpoint", { endpoint: "POST /agent/tasks" });
+
           const task = await startAutonomousAgentTask({
             projectName: selectedProject,
             prompt,
@@ -214,17 +370,124 @@ export default function ChatWorkspace({
           return;
         }
 
+        if (greenfieldRequest) {
+          logGeneration("start", {
+            prompt,
+            target: generationTarget,
+            selectedProject,
+            workspaceKind,
+            workspacePath,
+          });
+
+          let plan;
+          try {
+            plan = await planNewProject({
+              prompt,
+              model: model.trim(),
+              target: generationTarget,
+              targetPath:
+                generationTarget === "custom" ? greenfieldTargetPath || undefined : undefined,
+              currentWorkspace: selectedProject || undefined,
+              autoApply: true,
+            });
+          } catch (planError) {
+            logGeneration("error", {
+              stage: "plan",
+              message: planError.message,
+            });
+            throw planError;
+          }
+
+          logGeneration("plan", {
+            message: plan.message,
+            proposed_project_name: plan.proposed_project_name,
+            workspace_slug: plan.workspace_slug,
+            workspace_path: plan.workspace_path,
+            generate_in_place: plan.generate_in_place,
+            preview_count: (plan.review_session?.previews || plan.previews || []).length,
+            auto_applied: plan.auto_applied,
+          });
+
+          logAgentDebug("planner-result", {
+            message: plan.message,
+            is_greenfield: plan.is_greenfield,
+            proposed_project_name: plan.proposed_project_name,
+            workspace_slug: plan.workspace_slug,
+            workspace_path: plan.workspace_path,
+            review_session_id: plan.review_session?.id || plan.review_session_id,
+            preview_count: (plan.review_session?.previews || plan.previews || []).length,
+            auto_applied: plan.auto_applied,
+          });
+
+          let applyResult = plan.apply_result;
+
+          if (!applyResult && plan.review_session?.id) {
+            const validActions = (plan.review_session?.previews || plan.previews || []).filter(
+              (action) => action.valid
+            );
+            if (validActions.length) {
+              applyResult = await applyReviewActions({
+                reviewId: plan.review_session.id,
+                actionIds: validActions.map((action) => action.id),
+              });
+            }
+          }
+
+          if (applyResult) {
+            await completeGreenfieldGeneration(plan, applyResult, assistantId);
+            return;
+          }
+
+          setPlanMessage(plan.message);
+          setProposedProjectName(
+            plan.proposed_project_name || plan.review_session?.project_name || ""
+          );
+          setReviewSession(plan.review_session || null);
+          setPlannedActions(plan.review_session?.previews || plan.previews || []);
+          setChangeSummary(plan.change_summary || null);
+          setMessages((currentMessages) =>
+            currentMessages.map((message) =>
+              message.id === assistantId
+                ? {
+                    ...message,
+                    content: `${plan.message}\n\nReview the planned file changes below before applying.`,
+                  }
+                : message
+            )
+          );
+          return;
+        }
+
         const plan = selectedProject
           ? await planAgentFileActions({
               projectName: selectedProject,
               prompt,
               model: model.trim(),
-              useWorkspaceContext,
+              useWorkspaceContext: useWorkspaceContext || workspaceKind === "external",
             })
           : await planNewProject({
               prompt,
               model: model.trim(),
+              target: generationTarget,
+              targetPath:
+                generationTarget === "custom" ? greenfieldTargetPath || undefined : undefined,
+              currentWorkspace: selectedProject || undefined,
+              autoApply: true,
             });
+
+        logAgentDebug("planner-result", {
+          message: plan.message,
+          is_greenfield: plan.is_greenfield,
+          proposed_project_name: plan.proposed_project_name,
+          review_session_id: plan.review_session?.id || plan.review_session_id,
+          preview_count: (plan.review_session?.previews || plan.previews || []).length,
+          auto_applied: plan.auto_applied,
+        });
+
+        if (plan.auto_applied && plan.apply_result) {
+          await completeGreenfieldGeneration(plan, plan.apply_result, assistantId);
+          return;
+        }
 
         setPlanMessage(plan.message);
         setProposedProjectName(plan.proposed_project_name || plan.review_session?.project_name || "");
@@ -254,6 +517,8 @@ export default function ChatWorkspace({
         );
         return;
       }
+
+      logAgentDebug("endpoint", { endpoint: "POST /ollama/chat/stream" });
 
       await streamOllamaChat({
         prompt,
@@ -289,11 +554,15 @@ export default function ChatWorkspace({
         },
       });
     } catch (chatError) {
+      logGeneration("error", {
+        stage: "request",
+        message: chatError.message,
+      });
       setError(chatError.message);
       setMessages((currentMessages) =>
         currentMessages.map((message) =>
           message.id === assistantId
-            ? { ...message, content: chatError.message }
+            ? { ...message, content: `Generation failed:\n\n${chatError.message}` }
             : message
         )
       );
@@ -311,6 +580,13 @@ export default function ChatWorkspace({
     setApplying(true);
     setError("");
 
+    logAgentDebug("apply-start", {
+      reviewSessionId: reviewSession?.id,
+      projectName,
+      actionCount: validActions.length,
+      actionPaths: validActions.map((action) => action.path || action.new_path || action.id),
+    });
+
     try {
       const result = reviewSession?.id
         ? await applyReviewActions({
@@ -326,6 +602,15 @@ export default function ChatWorkspace({
             prompt: planMessage,
           });
 
+      logAgentDebug("apply-result", {
+        message: result.message,
+        is_greenfield: result.is_greenfield,
+        project_name: result.project_name,
+        created_files: (result.results || []).map(
+          (entry) => entry.path || entry.file || entry.new_path || entry
+        ),
+      });
+
       setMessages((currentMessages) => [
         ...currentMessages,
         { id: `assistant-applied-${Date.now()}`, role: "assistant", content: result.message },
@@ -337,6 +622,7 @@ export default function ChatWorkspace({
       setProposedProjectName("");
 
       if (result.is_greenfield && result.project_name) {
+        logAgentDebug("project-created", { project_name: result.project_name });
         await onProjectCreated?.(result.project_name);
       } else {
         onFilesChanged?.();
@@ -432,6 +718,10 @@ export default function ChatWorkspace({
   }
 
   const hasInvalidPlannedActions = plannedActions.some((action) => !action.valid);
+  const composerGreenfield = isGreenfieldPrompt(input.trim(), {
+    selectedProject,
+    workspaceKind,
+  });
 
   return (
     <div className="ws-chat-workspace">
@@ -510,11 +800,23 @@ export default function ChatWorkspace({
       <form className="ws-composer" onSubmit={sendMessage}>
         {!selectedProject && (
           <div className="ws-greenfield-hint">
-            No project selected — try Agent Mode with: &quot;Build a modern React Todo App&quot;
+            No project selected — try: &quot;Build a modern React Todo App&quot;
           </div>
         )}
 
-        {error && <div style={{ color: "var(--ws-error)", fontSize: "0.85rem", marginBottom: "8px" }}>{error}</div>}
+        {error && (
+          <div className="ws-error-panel">
+            <strong>Request failed</strong>
+            <pre>{error}</pre>
+          </div>
+        )}
+
+        {!ollamaReady() && ollamaStatus && (
+          <div className="ws-error-panel">
+            <strong>Ollama unavailable</strong>
+            <pre>{buildOllamaErrorMessage()}</pre>
+          </div>
+        )}
 
         <div className="ws-composer-toolbar">
           <span>
@@ -541,10 +843,14 @@ export default function ChatWorkspace({
         <div className="ws-composer-actions">
           <button
             className="ws-btn ws-btn-primary"
-            disabled={generating || applying || !input.trim()}
+            disabled={generating || applying || !input.trim() || !ollamaReady()}
             type="submit"
           >
-            {generating ? (agentMode ? "Planning..." : "Generating...") : "Send"}
+            {generating
+              ? composerGreenfield || agentMode
+                ? "Planning…"
+                : "Generating…"
+              : "Send"}
           </button>
         </div>
       </form>
@@ -552,4 +858,4 @@ export default function ChatWorkspace({
   );
 }
 
-export { DEFAULT_WELCOME, isGreenfieldPrompt };
+export { DEFAULT_WELCOME, isGreenfieldPrompt, resolveGenerationTarget };

@@ -87,7 +87,15 @@ def _raise_http_from_escape(exc: PathEscapeError) -> None:
 
 
 def resolve_project_dir(project_name: str, *, must_exist: bool = True) -> Path:
-    """Resolve a project directory inside the workspace root."""
+    """Resolve a project directory from the managed workspace or external registry."""
+    from app.workspace_registry import get_external_project_dir
+
+    external_dir = get_external_project_dir(project_name)
+    if external_dir is not None:
+        if must_exist and (not external_dir.exists() or not external_dir.is_dir()):
+            raise HTTPException(status_code=404, detail="Project not found")
+        return external_dir
+
     _validate_project_name_http(project_name)
 
     workspace_root = get_workspace_root().resolve()
@@ -110,19 +118,23 @@ def resolve_path_in_project_dir(project_dir: Path, relative_path: str) -> Path:
     _validate_name_segment_raise(relative_path, "Path")
 
     requested = Path(relative_path)
-    workspace_root = get_workspace_root().resolve()
     project_root = project_dir.resolve()
+    workspace_root = get_workspace_root().resolve()
 
-    _ensure_within_root(project_root, workspace_root, "Project")
+    try:
+        project_root.relative_to(workspace_root)
+        _ensure_within_root(project_root, workspace_root, "Project")
+    except ValueError:
+        pass
 
     target_path = (project_root / requested).resolve()
 
-    _ensure_within_root(target_path, workspace_root, "Path")
     try:
         target_path.relative_to(project_root)
     except ValueError as exc:
         raise PathEscapeError("Path escapes project workspace") from exc
 
+    _ensure_within_root(target_path, project_root, "Path")
     return target_path
 
 
@@ -138,20 +150,8 @@ def resolve_workspace_path(
     Raises HTTPException(403) on escape attempts.
     Raises HTTPException(404) when must_exist=True and path is missing.
     """
-    _validate_project_name_http(project_name)
     _validate_name_segment(relative_path, "Path")
-
-    workspace_root = get_workspace_root().resolve()
-    project_dir = (workspace_root / project_name).resolve()
-
-    try:
-        _ensure_within_root(project_dir, workspace_root, "Project")
-    except PathEscapeError as exc:
-        _raise_http_from_escape(exc)
-
-    if not project_dir.exists() or not project_dir.is_dir():
-        raise HTTPException(status_code=404, detail="Project not found")
-
+    project_dir = resolve_project_dir(project_name, must_exist=True)
     target_path = resolve_path_in_project_dir(project_dir, relative_path)
 
     if must_exist and not target_path.exists():
@@ -168,6 +168,12 @@ def resolve_workspace_target(project_name: str, relative_path: str) -> Path:
     """
     _validate_project_name_http(project_name)
     _validate_name_segment(relative_path, "Path")
+
+    from app.workspace_registry import get_external_project_dir
+
+    external_dir = get_external_project_dir(project_name)
+    if external_dir is not None:
+        return resolve_path_in_project_dir(external_dir, relative_path)
 
     workspace_root = get_workspace_root().resolve()
     project_dir = (workspace_root / project_name).resolve()

@@ -134,3 +134,46 @@ def generate_text_response(
         raise RuntimeError(payload["error"])
 
     return payload.get("response", "")
+
+
+def get_ollama_status(model: str | None = None) -> dict:
+    settings = get_settings()
+    selected_model = get_ollama_model(model)
+    base_url = settings.ollama_base_url.rstrip("/")
+    status = {
+        "online": False,
+        "base_url": base_url,
+        "model": selected_model,
+        "model_available": False,
+        "message": "",
+        "models": [],
+    }
+
+    try:
+        response = requests.get(f"{base_url}/api/tags", timeout=3)
+        response.raise_for_status()
+        status["online"] = True
+        payload = response.json()
+        models = [item.get("name") for item in payload.get("models", []) if item.get("name")]
+        status["models"] = models
+        status["model_available"] = selected_model in models or any(
+            selected_model.split(":")[0] == name.split(":")[0] for name in models
+        )
+        if not models:
+            status["message"] = "Ollama is running but no models are installed."
+        elif not status["model_available"]:
+            status["message"] = (
+                f"Model '{selected_model}' is not pulled. Run: ollama pull {selected_model}"
+            )
+        else:
+            status["message"] = "Ollama is connected."
+    except requests.exceptions.ConnectionError:
+        status["message"] = (
+            f"Cannot reach Ollama at {base_url}. Start Ollama and verify OLLAMA_BASE_URL."
+        )
+    except requests.exceptions.Timeout:
+        status["message"] = f"Timed out connecting to Ollama at {base_url}."
+    except requests.exceptions.RequestException as exc:
+        status["message"] = f"Ollama check failed: {exc}"
+
+    return status

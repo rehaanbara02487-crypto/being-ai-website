@@ -20,9 +20,16 @@ from app.autonomous_agent import get_task, request_stop, start_task
 from app.file_action_tools import FileActionError, apply_actions
 from app.git_service import GitServiceError
 import app.git_service as git_service
-from app.ollama_service import OllamaOfflineError, stream_chat_response
+from app.ollama_service import OllamaOfflineError, get_ollama_status, stream_chat_response
 from app.config import get_settings, get_workspace_root
 from app.workspace_paths import resolve_project_dir, resolve_workspace_path
+from app.workspace_registry import (
+    list_all_workspaces,
+    list_project_slugs,
+    pick_folder_dialog,
+    register_external_workspace,
+    touch_workspace,
+)
 from app.repository_indexer import build_repository_context
 from app.review_sessions import (
     create_review_session,
@@ -48,6 +55,7 @@ from app.schemas import (
     RenamePathRequest,
     ReviewApplyRequest,
     ReviewRejectRequest,
+    WorkspaceOpenRequest,
 )
 from app.file_writer import save_file
 
@@ -226,6 +234,11 @@ async def ollama_chat_stream(request: OllamaChatRequest):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@app.get("/ollama/status")
+async def ollama_status(model: str | None = None):
+    return get_ollama_status(model)
+
+
 @app.post("/agent/projects/plan")
 async def plan_new_project_endpoint(request: ProjectPlanRequest):
     if not request.prompt.strip():
@@ -237,20 +250,33 @@ async def plan_new_project_endpoint(request: ProjectPlanRequest):
             model=request.model,
             project_name=request.project_name,
             stack=request.stack,
+            target=request.target,
+            target_path=request.target_path,
+            current_workspace=request.current_workspace,
         )
     except OllamaOfflineError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Invalid project plan from Ollama: {exc}") from exc
 
-    project_name = plan["proposed_project_name"]
+    project_name = plan.get("workspace_slug") or plan["proposed_project_name"]
     review_session = create_review_session(project_name, request.prompt, plan)
 
-    return {
+    response = {
         **plan,
         "review_session": review_session,
         "review_session_id": review_session["id"],
     }
+
+    if request.auto_apply and review_session.get("id"):
+        apply_result = await apply_agent_review_actions(
+            review_session["id"],
+            ReviewApplyRequest(action_ids=None),
+        )
+        response["apply_result"] = apply_result
+        response["auto_applied"] = True
+
+    return response
 
 
 @app.post("/agent/file-actions/plan")
@@ -327,7 +353,12 @@ async def apply_agent_review_actions(review_id: str, request: ReviewApplyRequest
         raise HTTPException(status_code=404, detail="Review session not found")
 
     if review.get("is_greenfield"):
-        project_dir = ensure_project_workspace(review["project_name"])
+        workspace_path = review.get("workspace_path")
+        if workspace_path:
+            project_dir = Path(workspace_path).resolve()
+            project_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            project_dir = ensure_project_workspace(review["project_name"])
     else:
         project_dir = get_project_dir(review["project_name"])
 
@@ -363,7 +394,8 @@ async def apply_agent_review_actions(review_id: str, request: ReviewApplyRequest
         "status": "applied",
         "results": results,
         "review_session": updated_review,
-        "project_name": review["project_name"],
+        "project_name": review.get("workspace_slug") or review["project_name"],
+        "workspace_path": review.get("workspace_path"),
         "is_greenfield": review.get("is_greenfield", False),
         "run_profile": review.get("run_profile"),
         "message": f"Applied {len(results)} file operation(s).",
@@ -493,27 +525,40 @@ async def save_generated_file(request: FileRequest):
     }
 
 
+@app.get("/workspaces")
+async def list_workspaces():
+    return {"workspaces": list_all_workspaces()}
+
+
+@app.post("/workspaces/open")
+async def open_workspace(request: WorkspaceOpenRequest):
+    workspace = register_external_workspace(request.path, name=request.name)
+    touch_workspace(workspace["slug"])
+    return workspace
+
+
+@app.post("/workspaces/pick-folder")
+async def pick_workspace_folder():
+    selected = pick_folder_dialog()
+    if not selected:
+        return {"cancelled": True}
+
+    workspace = register_external_workspace(selected)
+    touch_workspace(workspace["slug"])
+    return workspace
+
+
 @app.get("/projects")
 async def list_projects():
-
-    workspace = get_workspace_root()
-    workspace.mkdir(parents=True, exist_ok=True)
-
-    projects = []
-
-    for item in workspace.iterdir():
-        if item.is_dir():
-            projects.append(item.name)
-
-    return {
-        "projects": projects
-    }
+    get_workspace_root().mkdir(parents=True, exist_ok=True)
+    return {"projects": list_project_slugs()}
 
 
 @app.get("/projects/{project_name}")
 async def get_project_files(project_name: str):
 
     project_dir = resolve_project_dir(project_name, must_exist=True)
+    touch_workspace(project_name)
 
     files = []
     folders = []
@@ -526,8 +571,9 @@ async def get_project_files(project_name: str):
 
     return {
         "project": project_name,
+        "path": str(project_dir),
         "files": sorted(files),
-        "folders": sorted(folders)
+        "folders": sorted(folders),
     }
 @app.get("/projects/{project_name}/file")
 async def read_file(

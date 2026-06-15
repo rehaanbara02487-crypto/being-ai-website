@@ -7,13 +7,26 @@ import {
   getProject,
   getProjectFile,
   listProjects,
+  listWorkspaces,
+  openWorkspace,
+  pickWorkspaceFolder,
   renameProjectPath,
   saveProjectFile,
 } from "../lib/api";
+import {
+  getStoredActiveWorkspaceSlug,
+  setStoredActiveWorkspaceSlug,
+  useRecentWorkspaces,
+} from "./useRecentWorkspaces";
 
 export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
+  const { rememberWorkspace, getRecents } = useRecentWorkspaces();
   const [projects, setProjects] = useState([]);
+  const [workspaces, setWorkspaces] = useState([]);
+  const [recentWorkspaces, setRecentWorkspaces] = useState(() => getRecents());
   const [selectedProject, setSelectedProject] = useState("");
+  const [workspacePath, setWorkspacePath] = useState("");
+  const [workspaceKind, setWorkspaceKind] = useState("managed");
   const [files, setFiles] = useState([]);
   const [folders, setFolders] = useState([]);
   const [selectedFile, setSelectedFile] = useState("");
@@ -25,56 +38,19 @@ export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
   const [message, setMessage] = useState("Loading projects...");
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadProjects() {
-      try {
-        setError("");
-        const data = await listProjects();
-        if (cancelled) return;
-
-        const projectNames = data.projects || [];
-        setProjects(projectNames);
-        setMessage(
-          projectNames.length
-            ? "Select a project to load its files."
-            : "No projects found in the backend workspace."
-        );
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(loadError.message);
-          setMessage("Unable to load projects.");
-        }
-      }
-    }
-
-    loadProjects();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const refreshProjectFiles = useCallback(async (projectName, successMessage) => {
-    const data = await getProject(projectName);
-    const projectFiles = data.files || [];
-    const projectFolders = data.folders || [];
-
-    setFiles(projectFiles);
-    setFolders(projectFolders);
-    setMessage(
-      successMessage ||
-        (projectFiles.length || projectFolders.length
-          ? "Choose a file to open it in the editor."
-          : "This project has no files yet.")
-    );
-
-    return data;
+  const syncWorkspaceLists = useCallback(async () => {
+    const [projectsData, workspacesData] = await Promise.all([
+      listProjects(),
+      listWorkspaces(),
+    ]);
+    const projectNames = projectsData.projects || [];
+    setProjects(projectNames);
+    setWorkspaces(workspacesData.workspaces || []);
+    return { projectNames, workspaces: workspacesData.workspaces || [] };
   }, []);
 
   const openProject = useCallback(
-    async (projectName) => {
+    async (projectName, workspaceMeta = null) => {
       setSelectedProject(projectName);
       setSelectedFile("");
       setSelectedFolder("");
@@ -88,7 +64,33 @@ export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
       setMessage(`Loading ${projectName}...`);
 
       try {
-        await refreshProjectFiles(projectName);
+        const data = await getProject(projectName);
+        const projectFiles = data.files || [];
+        const projectFolders = data.folders || [];
+
+        setFiles(projectFiles);
+        setFolders(projectFolders);
+        setWorkspacePath(data.path || workspaceMeta?.path || "");
+        setWorkspaceKind(workspaceMeta?.kind || "managed");
+        setMessage(
+          projectFiles.length || projectFolders.length
+            ? "Choose a file to open it in the editor."
+            : "This project has no files yet."
+        );
+
+        const workspaceRecord = workspaceMeta || {
+          slug: projectName,
+          name: projectName,
+          path: data.path || "",
+          kind: "managed",
+        };
+
+        setWorkspaceKind(workspaceRecord.kind || "managed");
+
+        rememberWorkspace(workspaceRecord);
+        setRecentWorkspaces(getRecents());
+        setStoredActiveWorkspaceSlug(projectName);
+
         await onProjectOpened?.(projectName);
       } catch (loadError) {
         setError(loadError.message);
@@ -97,8 +99,59 @@ export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
         setLoading(false);
       }
     },
-    [onProjectOpened, onRunnerReset, refreshProjectFiles]
+    [onProjectOpened, onRunnerReset, getRecents, rememberWorkspace]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function bootstrap() {
+      try {
+        setError("");
+        const { projectNames } = await syncWorkspaceLists();
+        if (cancelled) return;
+
+        if (projectNames.length) {
+          setMessage("Select a project or open a folder.");
+          const lastSlug = getStoredActiveWorkspaceSlug();
+          if (lastSlug && projectNames.includes(lastSlug)) {
+            await openProject(lastSlug);
+          }
+        } else {
+          setMessage("No projects found. Open a folder or scaffold one from Chat.");
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError.message);
+          setMessage("Unable to load projects.");
+        }
+      }
+    }
+
+    bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const refreshProjectFiles = useCallback(async (projectName, successMessage) => {
+    const data = await getProject(projectName);
+    const projectFiles = data.files || [];
+    const projectFolders = data.folders || [];
+
+    setFiles(projectFiles);
+    setFolders(projectFolders);
+    setWorkspacePath(data.path || "");
+    setMessage(
+      successMessage ||
+        (projectFiles.length || projectFolders.length
+          ? "Choose a file to open it in the editor."
+          : "This project has no files yet.")
+    );
+
+    return data;
+  }, []);
 
   const openFile = useCallback(
     async (filePath) => {
@@ -263,15 +316,57 @@ export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
   }, [refreshProjectFiles, selectedFile, selectedFolder, selectedProject]);
 
   const reloadProjects = useCallback(async () => {
-    const data = await listProjects();
-    setProjects(data.projects || []);
-    return data.projects || [];
-  }, []);
+    const { projectNames } = await syncWorkspaceLists();
+    return projectNames;
+  }, [syncWorkspaceLists]);
+
+  const openFolderDialog = useCallback(async () => {
+    setError("");
+    setMessage("Waiting for folder selection…");
+
+    try {
+      const result = await pickWorkspaceFolder();
+      if (result.cancelled) {
+        setMessage("Folder selection cancelled.");
+        return null;
+      }
+
+      await syncWorkspaceLists();
+      await openProject(result.slug, result);
+      return result;
+    } catch (pickError) {
+      setError(pickError.message);
+      setMessage("Unable to open folder.");
+      return null;
+    }
+  }, [openProject, syncWorkspaceLists]);
+
+  const openFolderPath = useCallback(
+    async (path, name) => {
+      setError("");
+      setMessage("Opening folder…");
+
+      try {
+        const result = await openWorkspace({ path, name });
+        await syncWorkspaceLists();
+        await openProject(result.slug, result);
+        return result;
+      } catch (openError) {
+        setError(openError.message);
+        setMessage("Unable to open folder.");
+        return null;
+      }
+    },
+    [openProject, syncWorkspaceLists]
+  );
 
   return {
     projects,
-    setProjects,
+    workspaces,
+    recentWorkspaces,
     selectedProject,
+    workspacePath,
+    workspaceKind,
     files,
     folders,
     selectedFile,
@@ -290,6 +385,8 @@ export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
     refreshProjectFiles,
     openProject,
     openFile,
+    openFolderDialog,
+    openFolderPath,
     saveFile,
     createFile,
     createFolder,

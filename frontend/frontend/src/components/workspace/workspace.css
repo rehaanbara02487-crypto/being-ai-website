@@ -69,11 +69,30 @@
 }
 
 .ws-header-project {
+  color: var(--ws-text);
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.ws-header-workspace {
   border-left: 1px solid var(--ws-border);
-  color: var(--ws-muted);
-  font-size: 0.78rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   margin-left: 4px;
+  max-width: 420px;
+  min-width: 0;
   padding-left: 12px;
+}
+
+.ws-header-path {
+  color: var(--ws-muted);
+  display: block;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ws-header-brand strong {
@@ -128,6 +147,26 @@
 
 .ws-status-running {
   color: var(--ws-accent);
+}
+
+.ws-status-error {
+  color: var(--ws-error);
+}
+
+.ws-error-panel {
+  background: rgba(255, 133, 133, 0.08);
+  border: 1px solid rgba(255, 133, 133, 0.25);
+  border-radius: 8px;
+  color: var(--ws-error);
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+}
+
+.ws-error-panel pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .ws-main-layout {

@@ -65,6 +65,15 @@ class ProjectPlanRequest(BaseModel):
     project_name: str | None = None
     model: str | None = None
     stack: str | None = None
+    target: str = "default"
+    target_path: str | None = None
+    current_workspace: str | None = None
+    auto_apply: bool = False
+
+
+class WorkspaceOpenRequest(BaseModel):
+    path: str
+    name: str | None = None
 
 
 class GitBranchRequest(BaseModel):

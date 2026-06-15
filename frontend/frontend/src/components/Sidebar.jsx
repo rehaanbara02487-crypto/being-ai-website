@@ -17,8 +17,11 @@ export default function Sidebar({
   onFocusNav,
   navButtonRefs,
   projects,
+  workspaces,
+  recentWorkspaces,
   selectedProject,
   onSelectProject,
+  onOpenFolder,
   files,
   folders,
   selectedFile,
@@ -51,20 +54,53 @@ export default function Sidebar({
       case "explorer":
         return (
           <>
+            <button
+              className="ws-btn ws-btn-primary ws-full-width"
+              onClick={onOpenFolder}
+              type="button"
+            >
+              Open Folder…
+            </button>
+
+            {recentWorkspaces.length > 0 && (
+              <>
+                <div className="ws-sidebar-section-label">Recent Folders</div>
+                {recentWorkspaces.map((workspace) => (
+                  <button
+                    key={`recent-${workspace.slug}`}
+                    className={`ws-list-item ${workspace.slug === selectedProject ? "active" : ""}`}
+                    onClick={() => onSelectProject(workspace.slug)}
+                    title={workspace.path}
+                    type="button"
+                  >
+                    <div>{workspace.name || workspace.slug}</div>
+                    <div className="ws-list-item-meta">{workspace.path}</div>
+                  </button>
+                ))}
+              </>
+            )}
+
             <div className="ws-sidebar-section-label">Projects</div>
             {projects.length ? (
-              projects.map((project) => (
-                <button
-                  key={project}
-                  className={`ws-list-item ${project === selectedProject ? "active" : ""}`}
-                  onClick={() => onSelectProject(project)}
-                  type="button"
-                >
-                  {project}
-                </button>
-              ))
+              projects.map((project) => {
+                const workspace = workspaces.find((item) => item.slug === project);
+                return (
+                  <button
+                    key={project}
+                    className={`ws-list-item ${project === selectedProject ? "active" : ""}`}
+                    onClick={() => onSelectProject(project)}
+                    title={workspace?.path || project}
+                    type="button"
+                  >
+                    <div>{workspace?.name || project}</div>
+                    {workspace?.path && (
+                      <div className="ws-list-item-meta">{workspace.path}</div>
+                    )}
+                  </button>
+                );
+              })
             ) : (
-              <div className="ws-empty-inline">No projects yet. Use Chat to scaffold one.</div>
+              <div className="ws-empty-inline">No projects yet. Open a folder or scaffold one from Chat.</div>
             )}
 
             <div className="ws-sidebar-section-label">Files</div>
@@ -241,6 +277,50 @@ export default function Sidebar({
               placeholder="Model override (optional)"
               value={chatSettings.model}
             />
+
+            <div className="ws-sidebar-section-label">Project Generation Target</div>
+            <label className="ws-settings-row">
+              <input
+                checked={chatSettings.greenfieldTarget === "default"}
+                name="greenfield-target"
+                onChange={() => onChatSettingsChange({ greenfieldTarget: "default" })}
+                type="radio"
+              />
+              Default workspace folder
+            </label>
+            <label className="ws-settings-row">
+              <input
+                checked={chatSettings.greenfieldTarget === "current"}
+                disabled={!selectedProject}
+                name="greenfield-target"
+                onChange={() => onChatSettingsChange({ greenfieldTarget: "current" })}
+                type="radio"
+              />
+              Current workspace folder
+            </label>
+            <label className="ws-settings-row">
+              <input
+                checked={chatSettings.greenfieldTarget === "custom"}
+                name="greenfield-target"
+                onChange={() => onChatSettingsChange({ greenfieldTarget: "custom" })}
+                type="radio"
+              />
+              Custom folder
+            </label>
+            {chatSettings.greenfieldTarget === "custom" && (
+              <div className="ws-muted-copy" style={{ fontSize: "0.82rem", marginTop: "6px" }}>
+                {chatSettings.greenfieldTargetPath || "Use Open Folder before generating, or pick below."}
+              </div>
+            )}
+            {chatSettings.greenfieldTarget === "custom" && (
+              <button
+                className="ws-btn ws-full-width"
+                onClick={() => onChatSettingsChange({ pickCustomTarget: true })}
+                type="button"
+              >
+                Choose Target Folder…
+              </button>
+            )}
           </>
         );
 

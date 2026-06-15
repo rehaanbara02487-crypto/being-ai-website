@@ -5,9 +5,11 @@ import ActivityPanel from "./ActivityPanel";
 import ChatWorkspace, { DEFAULT_WELCOME } from "./ChatWorkspace";
 import Sidebar, { PRIMARY_NAV } from "./Sidebar";
 import { useChatSessions } from "../hooks/useChatSessions";
+import { useOllamaStatus } from "../hooks/useOllamaStatus";
 import { useProjectRunner } from "../hooks/useProjectRunner";
 import { useSidebarState } from "../hooks/useSidebarState";
 import { useWorkspaceProject } from "../hooks/useWorkspaceProject";
+import { logGeneration } from "../lib/agentDebug";
 import "./workspace/workspace.css";
 
 const SIDEBAR_TO_ACTIVITY = {
@@ -27,6 +29,8 @@ export default function Workspace({ onClose }) {
     autonomousMode: false,
     useWorkspaceContext: false,
     model: "",
+    greenfieldTarget: "default",
+    greenfieldTargetPath: "",
   });
 
   const { sidebarView, setSidebarView, sidebarExpanded, setSidebarExpanded } = useSidebarState();
@@ -48,6 +52,21 @@ export default function Workspace({ onClose }) {
     onProjectOpened: runner.refreshRunStatus,
   });
 
+  const ollama = useOllamaStatus(chatSettings.model);
+
+  useEffect(() => {
+    if (project.workspaceKind !== "external" || !project.selectedProject) {
+      return;
+    }
+
+    setChatSettings((current) => ({
+      ...current,
+      agentMode: true,
+      useWorkspaceContext: true,
+      greenfieldTarget: "in_place",
+    }));
+  }, [project.selectedProject, project.workspaceKind]);
+
   const activeSession = getActiveSession();
   const sessionMessages = activeSession?.messages || [DEFAULT_WELCOME];
 
@@ -60,9 +79,22 @@ export default function Workspace({ onClose }) {
     setActiveSessionId(sessions[0].id);
   }, [activeSessionId, createSession, sessions, setActiveSessionId]);
 
-  const handleChatSettingsChange = useCallback((patch) => {
+  const handleChatSettingsChange = useCallback(async (patch) => {
+    if (patch.pickCustomTarget) {
+      const result = await project.openFolderDialog();
+      if (result?.path) {
+        setChatSettings((current) => ({
+          ...current,
+          greenfieldTarget: "custom",
+          greenfieldTargetPath: result.path,
+        }));
+      }
+      return;
+    }
+
     setChatSettings((current) => {
       const next = { ...current, ...patch };
+      delete next.pickCustomTarget;
       if (patch.agentMode === false) {
         next.autonomousMode = false;
       }
@@ -71,7 +103,7 @@ export default function Workspace({ onClose }) {
       }
       return next;
     });
-  }, []);
+  }, [project]);
 
   const handleNewChat = useCallback(() => {
     createSession("New Chat");
@@ -243,6 +275,39 @@ export default function Workspace({ onClose }) {
     setSidebarExpanded(true);
   }
 
+  async function handleGenerationComplete({
+    projectName,
+    createdFiles,
+    workspacePath,
+    inPlace,
+  }) {
+    logGeneration("explorer", { projectName, inPlace, workspacePath });
+
+    await project.reloadProjects();
+    await project.refreshProjectFiles(
+      projectName,
+      inPlace
+        ? `Success: ${createdFiles.length} file(s) written to ${workspacePath || "workspace"}.`
+        : `Project ${projectName} created with ${createdFiles.length} file(s).`
+    );
+
+    setActivityView("explorer");
+    setSidebarView("explorer");
+    setSidebarExpanded(true);
+
+    const firstFile =
+      createdFiles.find((filePath) => filePath && /\.[a-z0-9]+$/i.test(filePath)) ||
+      createdFiles[0];
+
+    if (firstFile) {
+      setActivityView("editor");
+      await project.openFile(firstFile);
+      logGeneration("opened", { projectName, firstFile, workspacePath });
+    } else {
+      logGeneration("opened", { projectName, workspacePath });
+    }
+  }
+
   async function handleFilesChanged() {
     if (project.selectedProject) {
       await project.refreshProjectFiles(project.selectedProject, "Workspace updated by AI agent.");
@@ -285,12 +350,37 @@ export default function Workspace({ onClose }) {
             <strong>BEING AI</strong>
             <span>Workspace IDE</span>
           </div>
-          <span className="ws-header-project">
-            {project.selectedProject || "No project selected"}
-          </span>
+          <div className="ws-header-workspace">
+            <span className="ws-header-project">
+              {project.selectedProject || "No project selected"}
+            </span>
+            {project.workspacePath && (
+              <span className="ws-header-path" title={project.workspacePath}>
+                {project.workspacePath}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="ws-header-actions">
+          <span
+            className={
+              ollama.status.online && ollama.status.model_available
+                ? "ws-status ws-status-running"
+                : "ws-status ws-status-error"
+            }
+            title={
+              ollama.status.models?.length
+                ? `Models: ${ollama.status.models.join(", ")}`
+                : ollama.status.message
+            }
+          >
+            {ollama.checking
+              ? "Checking Ollama…"
+              : ollama.status.online && ollama.status.model_available
+                ? "Ollama connected"
+                : "Ollama unavailable"}
+          </span>
           <span
             className={runner.projectRunning ? "ws-status ws-status-running" : "ws-status"}
           >
@@ -344,6 +434,7 @@ export default function Workspace({ onClose }) {
           onFocusNav={setFocusedNavIndex}
           onNavigate={handleSidebarNavigate}
           onNewChat={handleNewChat}
+          onOpenFolder={project.openFolderDialog}
           onOpenFile={(filePath) => {
             setActivityView("editor");
             project.openFile(filePath);
@@ -373,12 +464,14 @@ export default function Workspace({ onClose }) {
           onToggleExpanded={() => setSidebarExpanded((current) => !current)}
           projectRunning={runner.projectRunning}
           projects={project.projects}
+          recentWorkspaces={project.recentWorkspaces}
           runStatus={runner.runStatus}
           searchQuery={searchQuery}
           searchResults={searchResults}
           selectedFile={project.selectedFile}
           selectedFolder={project.selectedFolder}
           selectedProject={project.selectedProject}
+          workspaces={project.workspaces}
         />
 
         <div className="ws-workspace-body">
@@ -394,15 +487,19 @@ export default function Workspace({ onClose }) {
                 key={chatSessionKey}
                 chatSettings={chatSettings}
                 initialMessages={sessionMessages}
+                ollamaStatus={ollama.status}
                 onAgentTaskChange={setAgentTask}
                 onChatSettingsChange={handleChatSettingsChange}
                 onFilesChanged={handleFilesChanged}
+                onGenerationComplete={handleGenerationComplete}
                 onMessagesChange={handleMessagesChange}
                 onOpenFile={handleOpenFileFromChat}
                 onProjectCreated={handleProjectCreated}
                 onSessionTitleChange={handleSessionTitleChange}
                 selectedProject={project.selectedProject}
                 sessionId={chatSessionKey}
+                workspaceKind={project.workspaceKind}
+                workspacePath={project.workspacePath}
               />
             </Panel>
 

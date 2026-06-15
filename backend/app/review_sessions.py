@@ -28,6 +28,9 @@ def create_review_session(project_name: str, prompt: str, plan: dict) -> dict:
         "run_profile": stored_plan.get("run_profile"),
         "stack": stored_plan.get("stack"),
         "proposed_project_name": stored_plan.get("proposed_project_name", project_name),
+        "workspace_slug": stored_plan.get("workspace_slug", project_name),
+        "workspace_path": stored_plan.get("workspace_path"),
+        "greenfield_target": stored_plan.get("greenfield_target"),
         "created_at": time.time(),
         "updated_at": time.time(),
     }
