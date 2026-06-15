@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  analyzeTerminalLogs,
   getProjectRunStatus,
   getProjectRunStreamUrl,
   startProjectRun,
@@ -11,8 +12,10 @@ export function useProjectRunner() {
   const [terminalLogs, setTerminalLogs] = useState([]);
   const [projectRunning, setProjectRunning] = useState(false);
   const [runStatus, setRunStatus] = useState("Idle");
+  const [terminalAnalysis, setTerminalAnalysis] = useState(null);
   const eventSourceRef = useRef(null);
   const terminalRef = useRef(null);
+  const logsRef = useRef([]);
 
   const closeRunStream = useCallback(() => {
     if (eventSourceRef.current) {
@@ -22,7 +25,11 @@ export function useProjectRunner() {
   }, []);
 
   const appendTerminalLog = useCallback((stream, message) => {
-    setTerminalLogs((logs) => [...logs, { stream, message }]);
+    setTerminalLogs((logs) => {
+      const next = [...logs, { stream, message }];
+      logsRef.current = next;
+      return next;
+    });
   }, []);
 
   const openRunStream = useCallback(
@@ -43,6 +50,13 @@ export function useProjectRunner() {
           setRunStatus(
             payload.returncode === null ? "Idle" : `Exited (${payload.returncode})`
           );
+          if (payload.returncode && payload.returncode !== 0) {
+            analyzeTerminalLogs(projectName, logsRef.current.slice(-200))
+              .then(setTerminalAnalysis)
+              .catch(() => setTerminalAnalysis(null));
+          } else {
+            setTerminalAnalysis(null);
+          }
           closeRunStream();
         }
       };
@@ -61,6 +75,7 @@ export function useProjectRunner() {
     setTerminalLogs([]);
     setProjectRunning(false);
     setRunStatus("Idle");
+    setTerminalAnalysis(null);
     closeRunStream();
   }, [closeRunStream]);
 
@@ -148,5 +163,7 @@ export function useProjectRunner() {
     refreshRunStatus,
     runProject,
     stopProject,
+    terminalAnalysis,
+    clearTerminalAnalysis: () => setTerminalAnalysis(null),
   };
 }

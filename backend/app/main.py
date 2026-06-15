@@ -24,13 +24,18 @@ from app.ollama_service import OllamaOfflineError, get_ollama_status, stream_cha
 from app.config import get_settings, get_workspace_root
 from app.workspace_paths import resolve_project_dir, resolve_workspace_path
 from app.workspace_registry import (
+    get_workspace_entry,
     list_all_workspaces,
     list_project_slugs,
     pick_folder_dialog,
     register_external_workspace,
     touch_workspace,
 )
-from app.repository_indexer import build_repository_context
+from app.repository_indexer import build_repository_context, should_skip_path
+from app.workspace_intelligence import scan_repository
+from app.workspace_index_service import get_or_build_index, search_workspace_index
+from app.git_intelligence import explain_changes_for_pr, suggest_commit_message, summarize_diff
+from app.terminal_intelligence import analyze_terminal_logs
 from app.review_sessions import (
     create_review_session,
     get_pending_actions,
@@ -78,6 +83,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("beingai.generation").setLevel(logging.INFO)
 
 
 RUNNING_PROJECTS = {}
@@ -155,11 +165,49 @@ def get_run_info(project_name: str):
 def get_repository_context_for_request(project_name: str, prompt: str, max_context_chars: int | None):
     project_dir = get_project_dir(project_name)
     context_limit = max_context_chars or get_settings().ollama_context_char_limit
-    return build_repository_context(
+
+    git_status_payload = {}
+    try:
+        git_service.ensure_git_repo(project_dir)
+        git_status_payload = {
+            "branch": git_service.current_branch(project_dir),
+            "changes": git_service.status(project_dir).get("changes", []),
+        }
+    except GitServiceError:
+        pass
+
+    intelligence = scan_repository(project_dir, git_status=git_status_payload)
+    index = get_or_build_index(project_dir, project_name)
+    search_hits = search_workspace_index(index, prompt, limit=12)
+
+    context_payload = build_repository_context(
         project_dir,
         prompt,
         max_chars=context_limit,
     )
+
+    index_section = "\n".join(
+        f"- {hit['path']} (score {hit['score']})"
+        for hit in search_hits
+    ) or "(no direct index matches)"
+
+    context_payload["intelligence"] = intelligence
+    context_payload["index"] = {
+        "file_count": index.get("file_count", 0),
+        "symbol_count": index.get("symbol_count", 0),
+        "search_hits": search_hits,
+    }
+    context_payload["context"] = (
+        "REPOSITORY SUMMARY:\n"
+        f"{intelligence['summary']}\n\n"
+        "INDEX SEARCH MATCHES:\n"
+        f"{index_section}\n\n"
+        f"{context_payload['context']}"
+    )
+    context_payload["status"] = (
+        f"{context_payload['status']} Repository intelligence loaded."
+    )
+    return context_payload
 
 
 def git_project_dir(project_name: str) -> Path:
@@ -181,9 +229,30 @@ class ApplyPlanRequest(BaseModel):
     project_name: str
     instruction: str
     
+class TerminalAnalyzeRequest(BaseModel):
+    logs: list[dict] = []
+
+
+class GitSuggestCommitRequest(BaseModel):
+    diff: str = ""
+    changes: list[dict] = []
+
+
+class GitSummarizeRequest(BaseModel):
+    diff: str = ""
+
+
+class GitPrDescriptionRequest(BaseModel):
+    diff: str = ""
+    base_branch: str = "main"
+    head_branch: str = "HEAD"
+
+
 class RunFixRequest(BaseModel):
     project_name: str
     instruction: str
+
+
 @app.get("/")
 async def root():
     return {
@@ -241,8 +310,19 @@ async def ollama_status(model: str | None = None):
 
 @app.post("/agent/projects/plan")
 async def plan_new_project_endpoint(request: ProjectPlanRequest):
+    from app.generation_log import log_generation_step
+
     if not request.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt is required")
+
+    log_generation_step(
+        "CHAT RECEIVED",
+        endpoint="/agent/projects/plan",
+        prompt_preview=request.prompt[:200],
+        target=request.target,
+        current_workspace=request.current_workspace,
+        auto_apply=request.auto_apply,
+    )
 
     try:
         plan = plan_new_project(
@@ -255,12 +335,24 @@ async def plan_new_project_endpoint(request: ProjectPlanRequest):
             current_workspace=request.current_workspace,
         )
     except OllamaOfflineError as exc:
+        log_generation_step("GENERATION FAILED", stage="plan", error=str(exc))
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (json.JSONDecodeError, ValueError) as exc:
+        log_generation_step("GENERATION FAILED", stage="plan", error=str(exc))
         raise HTTPException(status_code=502, detail=f"Invalid project plan from Ollama: {exc}") from exc
+    except HTTPException as exc:
+        log_generation_step("GENERATION FAILED", stage="plan", error=str(exc.detail))
+        raise
 
     project_name = plan.get("workspace_slug") or plan["proposed_project_name"]
     review_session = create_review_session(project_name, request.prompt, plan)
+    log_generation_step(
+        "REVIEW CREATED",
+        review_id=review_session.get("id"),
+        project_name=project_name,
+        workspace_path=plan.get("workspace_path"),
+        preview_count=len(review_session.get("previews") or []),
+    )
 
     response = {
         **plan,
@@ -269,9 +361,46 @@ async def plan_new_project_endpoint(request: ProjectPlanRequest):
     }
 
     if request.auto_apply and review_session.get("id"):
-        apply_result = await apply_agent_review_actions(
-            review_session["id"],
-            ReviewApplyRequest(action_ids=None),
+        log_generation_step(
+            "APPLY START",
+            review_id=review_session["id"],
+            workspace_path=review_session.get("workspace_path"),
+        )
+        try:
+            apply_result = await apply_agent_review_actions(
+                review_session["id"],
+                ReviewApplyRequest(action_ids=None),
+            )
+        except HTTPException as exc:
+            invalid_previews = [
+                {
+                    "path": preview.get("path"),
+                    "error": preview.get("error"),
+                }
+                for preview in review_session.get("previews") or []
+                if not preview.get("valid")
+            ]
+            log_generation_step(
+                "GENERATION FAILED",
+                stage="apply",
+                error=str(exc.detail),
+                invalid_previews=invalid_previews,
+            )
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "message": str(exc.detail),
+                    "invalid_previews": invalid_previews,
+                },
+            ) from exc
+        except FileActionError as exc:
+            log_generation_step("GENERATION FAILED", stage="apply", error=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        log_generation_step(
+            "GENERATION COMPLETE",
+            applied_count=len(apply_result.get("results") or []),
+            workspace_path=apply_result.get("workspace_path"),
         )
         response["apply_result"] = apply_result
         response["auto_applied"] = True
@@ -365,11 +494,37 @@ async def apply_agent_review_actions(review_id: str, request: ReviewApplyRequest
     actions = get_pending_actions(review_id, request.action_ids)
 
     if not actions:
-        raise HTTPException(status_code=400, detail="No pending valid actions selected")
+        invalid_previews = [
+            {
+                "id": preview.get("id"),
+                "path": preview.get("path"),
+                "error": preview.get("error"),
+                "tool": preview.get("tool"),
+            }
+            for preview in review.get("previews") or []
+            if not preview.get("valid")
+        ]
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "No pending valid actions selected",
+                "invalid_previews": invalid_previews,
+            },
+        )
+
+    from app.generation_log import log_generation_step
+
+    log_generation_step(
+        "APPLY START",
+        review_id=review_id,
+        action_count=len(actions),
+        workspace_path=str(project_dir),
+    )
 
     try:
         results = apply_actions(project_dir, actions)
     except FileActionError as exc:
+        log_generation_step("GENERATION FAILED", stage="apply_actions", error=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if review.get("is_greenfield"):
@@ -564,17 +719,82 @@ async def get_project_files(project_name: str):
     folders = []
 
     for item in project_dir.rglob("*"):
+        relative = item.relative_to(project_dir)
+        if should_skip_path(relative):
+            continue
         if item.is_dir():
-            folders.append(str(item.relative_to(project_dir)))
+            folders.append(str(relative))
         elif item.is_file():
-            files.append(str(item.relative_to(project_dir)))
+            files.append(str(relative))
+
+    entry = get_workspace_entry(project_name)
+    kind = entry.get("kind", "managed") if entry else "managed"
 
     return {
         "project": project_name,
         "path": str(project_dir),
+        "kind": kind,
         "files": sorted(files),
         "folders": sorted(folders),
     }
+
+
+@app.get("/projects/{project_name}/intelligence")
+async def get_project_intelligence(project_name: str):
+    project_dir = get_project_dir(project_name)
+    git_status_payload = {}
+    try:
+        git_service.ensure_git_repo(project_dir)
+        git_status_payload = {
+            "branch": git_service.current_branch(project_dir),
+            "changes": git_service.status(project_dir).get("changes", []),
+        }
+    except GitServiceError:
+        pass
+    return scan_repository(project_dir, git_status=git_status_payload)
+
+
+@app.post("/projects/{project_name}/index/rebuild")
+async def rebuild_project_index(project_name: str):
+    project_dir = get_project_dir(project_name)
+    from app.workspace_index_service import build_workspace_index
+
+    index = build_workspace_index(project_dir, project_name)
+    return {
+        "file_count": index["file_count"],
+        "symbol_count": index["symbol_count"],
+        "built_at": index["built_at"],
+    }
+
+
+@app.get("/projects/{project_name}/index/search")
+async def search_project_index(project_name: str, q: str, limit: int = 25):
+    project_dir = get_project_dir(project_name)
+    index = get_or_build_index(project_dir, project_name)
+    return {
+        "query": q,
+        "results": search_workspace_index(index, q, limit=limit),
+        "file_count": index.get("file_count", 0),
+        "symbol_count": index.get("symbol_count", 0),
+    }
+
+
+@app.get("/projects/{project_name}/index")
+async def get_project_index(project_name: str):
+    project_dir = get_project_dir(project_name)
+    index = get_or_build_index(project_dir, project_name)
+    return {
+        "file_count": index.get("file_count", 0),
+        "symbol_count": index.get("symbol_count", 0),
+        "built_at": index.get("built_at"),
+        "files": [entry["path"] for entry in index.get("files", [])[:200]],
+    }
+
+
+@app.post("/projects/{project_name}/terminal/analyze")
+async def analyze_project_terminal(project_name: str, request: TerminalAnalyzeRequest):
+    _ = project_name
+    return analyze_terminal_logs(request.logs)
 @app.get("/projects/{project_name}/file")
 async def read_file(
     project_name: str,
@@ -745,6 +965,42 @@ async def git_commit(project_name: str, request: GitCommitRequest):
         )
     except GitServiceError as exc:
         handle_git_error(exc)
+
+
+@app.post("/projects/{project_name}/git/suggest-commit")
+async def git_suggest_commit(project_name: str, request: GitSuggestCommitRequest):
+    try:
+        message = suggest_commit_message(
+            project_name,
+            request.diff,
+            request.changes,
+        )
+        return {"message": message}
+    except OllamaOfflineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/projects/{project_name}/git/summarize-diff")
+async def git_summarize_diff(project_name: str, request: GitSummarizeRequest):
+    try:
+        summary = summarize_diff(project_name, request.diff)
+        return {"summary": summary}
+    except OllamaOfflineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/projects/{project_name}/git/pr-description")
+async def git_pr_description(project_name: str, request: GitPrDescriptionRequest):
+    try:
+        description = explain_changes_for_pr(
+            project_name,
+            request.diff,
+            request.base_branch,
+            request.head_branch,
+        )
+        return {"description": description}
+    except OllamaOfflineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/projects/{project_name}/git/snapshots")

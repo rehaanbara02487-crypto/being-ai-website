@@ -71,7 +71,7 @@ export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
         setFiles(projectFiles);
         setFolders(projectFolders);
         setWorkspacePath(data.path || workspaceMeta?.path || "");
-        setWorkspaceKind(workspaceMeta?.kind || "managed");
+        setWorkspaceKind(workspaceMeta?.kind || data.kind || "managed");
         setMessage(
           projectFiles.length || projectFolders.length
             ? "Choose a file to open it in the editor."
@@ -82,10 +82,10 @@ export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
           slug: projectName,
           name: projectName,
           path: data.path || "",
-          kind: "managed",
+          kind: data.kind || "managed",
         };
 
-        setWorkspaceKind(workspaceRecord.kind || "managed");
+        setWorkspaceKind(workspaceRecord.kind || data.kind || "managed");
 
         rememberWorkspace(workspaceRecord);
         setRecentWorkspaces(getRecents());
@@ -108,14 +108,15 @@ export function useWorkspaceProject({ onProjectOpened, onRunnerReset }) {
     async function bootstrap() {
       try {
         setError("");
-        const { projectNames } = await syncWorkspaceLists();
+        const { projectNames, workspaces } = await syncWorkspaceLists();
         if (cancelled) return;
 
         if (projectNames.length) {
           setMessage("Select a project or open a folder.");
           const lastSlug = getStoredActiveWorkspaceSlug();
           if (lastSlug && projectNames.includes(lastSlug)) {
-            await openProject(lastSlug);
+            const workspaceMeta = workspaces.find((entry) => entry.slug === lastSlug) || null;
+            await openProject(lastSlug, workspaceMeta);
           }
         } else {
           setMessage("No projects found. Open a folder or scaffold one from Chat.");

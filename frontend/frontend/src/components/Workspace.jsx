@@ -6,10 +6,11 @@ import ChatWorkspace, { DEFAULT_WELCOME } from "./ChatWorkspace";
 import Sidebar, { PRIMARY_NAV } from "./Sidebar";
 import { useChatSessions } from "../hooks/useChatSessions";
 import { useOllamaStatus } from "../hooks/useOllamaStatus";
+import { useRepositoryIntelligence } from "../hooks/useRepositoryIntelligence";
 import { useProjectRunner } from "../hooks/useProjectRunner";
 import { useSidebarState } from "../hooks/useSidebarState";
 import { useWorkspaceProject } from "../hooks/useWorkspaceProject";
-import { logGeneration } from "../lib/agentDebug";
+import { logGeneration, recordGenerationStep, GENERATION_TAGS } from "../lib/agentDebug";
 import "./workspace/workspace.css";
 
 const SIDEBAR_TO_ACTIVITY = {
@@ -35,16 +36,6 @@ export default function Workspace({ onClose }) {
 
   const { sidebarView, setSidebarView, sidebarExpanded, setSidebarExpanded } = useSidebarState();
 
-  const {
-    sessions,
-    activeSessionId,
-    setActiveSessionId,
-    createSession,
-    updateSession,
-    deleteSession,
-    getActiveSession,
-  } = useChatSessions();
-
   const runner = useProjectRunner();
 
   const project = useWorkspaceProject({
@@ -52,7 +43,22 @@ export default function Workspace({ onClose }) {
     onProjectOpened: runner.refreshRunStatus,
   });
 
+  const {
+    sessions,
+    activeSessionId,
+    setActiveSessionId,
+    createSession,
+    updateSession,
+    renameSession,
+    pinSession,
+    deleteSession,
+    downloadSessionMarkdown,
+    searchSessions,
+    getActiveSession,
+  } = useChatSessions(project.selectedProject);
+
   const ollama = useOllamaStatus(chatSettings.model);
+  useRepositoryIntelligence(project.selectedProject);
 
   useEffect(() => {
     if (project.workspaceKind !== "external" || !project.selectedProject) {
@@ -67,17 +73,23 @@ export default function Workspace({ onClose }) {
     }));
   }, [project.selectedProject, project.workspaceKind]);
 
+  const [chatSearchQuery, setChatSearchQuery] = useState("");
+  const [fixPrompt, setFixPrompt] = useState("");
   const activeSession = getActiveSession();
   const sessionMessages = activeSession?.messages || [DEFAULT_WELCOME];
+  const visibleChatSessions = chatSearchQuery.trim()
+    ? searchSessions(chatSearchQuery)
+    : sessions;
 
   useEffect(() => {
+    if (!project.selectedProject) return;
     if (activeSessionId) return;
     if (sessions.length === 0) {
       createSession("New Chat");
       return;
     }
     setActiveSessionId(sessions[0].id);
-  }, [activeSessionId, createSession, sessions, setActiveSessionId]);
+  }, [activeSessionId, createSession, project.selectedProject, sessions, setActiveSessionId]);
 
   const handleChatSettingsChange = useCallback(async (patch) => {
     if (patch.pickCustomTarget) {
@@ -282,6 +294,12 @@ export default function Workspace({ onClose }) {
     inPlace,
   }) {
     logGeneration("explorer", { projectName, inPlace, workspacePath });
+    recordGenerationStep(GENERATION_TAGS.explorerRefresh, {
+      projectName,
+      inPlace,
+      workspacePath,
+      createdFiles,
+    });
 
     await project.reloadProjects();
     await project.refreshProjectFiles(
@@ -324,6 +342,13 @@ export default function Workspace({ onClose }) {
         await project.openFile(project.selectedFile);
       }
     }
+  }
+
+  function handleFixTerminalIssue(prompt) {
+    setFixPrompt(prompt);
+    setSidebarView("chat");
+    setSidebarExpanded(true);
+    handleChatSettingsChange({ agentMode: true, useWorkspaceContext: true });
   }
 
   function handleOpenFileFromChat(filePath) {
@@ -420,7 +445,13 @@ export default function Workspace({ onClose }) {
           activeSessionId={activeSessionId}
           activeView={sidebarView}
           agentTask={agentTask}
-          chatSessions={sessions}
+          chatSessions={visibleChatSessions}
+          chatSearchQuery={chatSearchQuery}
+          onChatSearchQueryChange={setChatSearchQuery}
+          onDownloadSession={downloadSessionMarkdown}
+          onPinSession={pinSession}
+          onRenameSession={renameSession}
+          ollamaStatus={ollama.status}
           chatSettings={chatSettings}
           expanded={sidebarExpanded}
           files={project.files}
@@ -491,6 +522,8 @@ export default function Workspace({ onClose }) {
                 onAgentTaskChange={setAgentTask}
                 onChatSettingsChange={handleChatSettingsChange}
                 onFilesChanged={handleFilesChanged}
+                fixPrompt={fixPrompt}
+                onFixPromptConsumed={() => setFixPrompt("")}
                 onGenerationComplete={handleGenerationComplete}
                 onMessagesChange={handleMessagesChange}
                 onOpenFile={handleOpenFileFromChat}
@@ -527,6 +560,7 @@ export default function Workspace({ onClose }) {
                   project.openFile(filePath);
                 }}
                 onRename={project.renameSelectedPath}
+                onFixIssue={handleFixTerminalIssue}
                 onRun={() => runner.runProject(project.selectedProject, project.setError)}
                 onSave={project.saveFile}
                 onSelectFolder={project.setSelectedFolder}
@@ -539,6 +573,7 @@ export default function Workspace({ onClose }) {
                 selectedFile={project.selectedFile}
                 selectedFolder={project.selectedFolder}
                 selectedProject={project.selectedProject}
+                terminalAnalysis={runner.terminalAnalysis}
                 terminalLogs={runner.terminalLogs}
                 terminalRef={runner.terminalRef}
               />

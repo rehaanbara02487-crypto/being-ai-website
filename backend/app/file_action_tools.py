@@ -188,23 +188,49 @@ def apply_action(project_dir: Path, action: dict) -> dict:
     preview = preview_action(project_dir, action, 1)
     target_path = resolve_workspace_path(project_dir, preview["path"])
 
-    if preview["tool"] == "create_file":
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(preview["args"].get("content", ""), encoding="utf-8")
+    from app.generation_log import log_generation_step
 
-    elif preview["tool"] == "edit_file":
-        target_path.write_text(preview["args"].get("content", ""), encoding="utf-8")
+    log_generation_step(
+        "FILE WRITE",
+        tool=preview["tool"],
+        path=preview["path"],
+        target=str(target_path),
+    )
 
-    elif preview["tool"] == "delete_file":
-        target_path.unlink()
+    try:
+        if preview["tool"] == "create_file":
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(preview["args"].get("content", ""), encoding="utf-8")
 
-    elif preview["tool"] == "rename_file":
-        new_target_path = resolve_workspace_path(project_dir, preview["new_path"])
-        new_target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.rename(new_target_path)
+        elif preview["tool"] == "edit_file":
+            target_path.write_text(preview["args"].get("content", ""), encoding="utf-8")
 
-    elif preview["tool"] == "create_folder":
-        target_path.mkdir(parents=True, exist_ok=False)
+        elif preview["tool"] == "delete_file":
+            target_path.unlink()
+
+        elif preview["tool"] == "rename_file":
+            new_target_path = resolve_workspace_path(project_dir, preview["new_path"])
+            new_target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.rename(new_target_path)
+
+        elif preview["tool"] == "create_folder":
+            target_path.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        log_generation_step(
+            "GENERATION FAILED",
+            stage="file_write",
+            tool=preview["tool"],
+            path=preview["path"],
+            error=str(exc),
+        )
+        raise FileActionError(str(exc)) from exc
+
+    log_generation_step(
+        "FILE WRITE SUCCESS",
+        tool=preview["tool"],
+        path=preview["path"],
+        target=str(target_path),
+    )
 
     return {
         "tool": preview["tool"],

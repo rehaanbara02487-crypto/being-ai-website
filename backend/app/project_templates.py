@@ -53,6 +53,53 @@ Use FastAPI with uvicorn. Entry point main.py.
 Include requirements.txt with fastapi and uvicorn.
 """.strip(),
     },
+    "nextjs": {
+        "label": "Next.js",
+        "run_profile": {
+            "type": "npm",
+            "install_command": "npm install",
+            "start_command": "npm run dev",
+            "script": "dev",
+        },
+        "required_folders": ["app", "public"],
+        "required_files": ["package.json", "next.config.js", "app/page.jsx", "app/layout.jsx"],
+        "guidance": "Use Next.js App Router with JavaScript/JSX unless TypeScript is requested.",
+    },
+    "vue-vite": {
+        "label": "Vue + Vite",
+        "run_profile": {
+            "type": "npm",
+            "install_command": "npm install",
+            "start_command": "npm run dev",
+            "script": "dev",
+        },
+        "required_folders": ["src"],
+        "required_files": ["package.json", "vite.config.js", "src/main.js", "src/App.vue"],
+        "guidance": "Use Vue 3 with Vite and a single-file App.vue entry.",
+    },
+    "express": {
+        "label": "Express",
+        "run_profile": {
+            "type": "npm",
+            "install_command": "npm install",
+            "start_command": "npm start",
+            "script": "start",
+        },
+        "required_folders": ["src"],
+        "required_files": ["package.json", "src/index.js"],
+        "guidance": "Use Express with a src/index.js entry and npm start script.",
+    },
+    "node-cli": {
+        "label": "Node CLI",
+        "run_profile": {
+            "type": "npm",
+            "install_command": "npm install",
+            "start_command": "node src/index.js",
+        },
+        "required_folders": ["src"],
+        "required_files": ["package.json", "src/index.js", "README.md"],
+        "guidance": "Create a small Node CLI with package.json bin entry when appropriate.",
+    },
 }
 
 
@@ -61,6 +108,14 @@ def detect_stack(prompt: str, requested_stack: str | None = None) -> str:
         return requested_stack
 
     lowered = prompt.lower()
+    if "next" in lowered or "nextjs" in lowered:
+        return "nextjs"
+    if "vue" in lowered:
+        return "vue-vite"
+    if "express" in lowered or "node api" in lowered:
+        return "express"
+    if "cli" in lowered and "node" in lowered:
+        return "node-cli"
     if "react" in lowered or "vite" in lowered or "todo" in lowered:
         return "react-vite"
     if "flask" in lowered:

@@ -39,6 +39,8 @@ export default function ActivityPanel({
   terminalLogs,
   projectRunning,
   runStatus,
+  terminalAnalysis,
+  onFixIssue,
   onRun,
   onStop,
   onWorkspaceChanged,
@@ -106,11 +108,13 @@ export default function ActivityPanel({
           <Separator className="ws-resize-handle ws-resize-handle-vertical" />
           <Panel defaultSize={38} id="terminal-dock" minSize={18}>
             <TerminalView
+              onFixIssue={onFixIssue}
               onRun={onRun}
               onStop={onStop}
               projectRunning={projectRunning}
               runStatus={runStatus}
               selectedProject={selectedProject}
+              terminalAnalysis={terminalAnalysis}
               terminalLogs={terminalLogs}
               terminalRef={terminalRef}
             />

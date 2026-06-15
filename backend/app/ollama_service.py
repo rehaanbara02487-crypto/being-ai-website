@@ -167,6 +167,8 @@ def get_ollama_status(model: str | None = None) -> dict:
             )
         else:
             status["message"] = "Ollama is connected."
+        status["context_window_chars"] = settings.ollama_context_char_limit
+        status["estimated_prompt_budget"] = settings.ollama_context_char_limit
     except requests.exceptions.ConnectionError:
         status["message"] = (
             f"Cannot reach Ollama at {base_url}. Start Ollama and verify OLLAMA_BASE_URL."

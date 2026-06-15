@@ -169,6 +169,74 @@
   word-break: break-word;
 }
 
+.ws-generation-diagnostics {
+  background: rgba(0, 255, 255, 0.04);
+  border: 1px solid rgba(0, 255, 255, 0.15);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+}
+
+.ws-generation-diagnostics summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.ws-generation-diagnostics-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 8px 0;
+}
+
+.ws-generation-diagnostics-toolbar button {
+  background: transparent;
+  border: 1px solid var(--ws-border);
+  border-radius: 6px;
+  color: var(--ws-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+}
+
+.ws-generation-diagnostics-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.ws-generation-step {
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 3px solid var(--ws-accent);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  padding: 8px;
+}
+
+.ws-generation-step-error {
+  border-left-color: var(--ws-error);
+}
+
+.ws-generation-step-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.ws-generation-step pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ws-muted {
+  color: var(--ws-muted);
+  font-size: 0.78rem;
+}
+
 .ws-main-layout {
   display: flex;
   height: calc(100vh - 48px);
@@ -695,6 +763,11 @@
   gap: 6px;
   grid-template-columns: 1fr 1fr;
   margin-bottom: 10px;
+}
+
+.ws-file-explorer-list {
+  max-height: 420px;
+  overflow: auto;
 }
 
 .ws-file-item {

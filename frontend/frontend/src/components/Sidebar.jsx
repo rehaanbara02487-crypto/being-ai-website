@@ -33,6 +33,12 @@ export default function Sidebar({
   onRename,
   onDelete,
   chatSessions,
+  chatSearchQuery,
+  onChatSearchQueryChange,
+  onRenameSession,
+  onPinSession,
+  onDownloadSession,
+  ollamaStatus,
   activeSessionId,
   onSelectSession,
   onNewChat,
@@ -126,6 +132,13 @@ export default function Sidebar({
             <button className="ws-btn ws-btn-primary ws-full-width" onClick={onNewChat} type="button">
               New Chat
             </button>
+            <input
+              aria-label="Search chat history"
+              className="ws-search-input"
+              onChange={(event) => onChatSearchQueryChange?.(event.target.value)}
+              placeholder="Search chats..."
+              value={chatSearchQuery || ""}
+            />
             <div className="ws-sidebar-section-label">History</div>
             {chatSessions.length ? (
               chatSessions.map((session) => (
@@ -133,9 +146,30 @@ export default function Sidebar({
                   <button
                     className={`ws-list-item ${session.id === activeSessionId ? "active" : ""}`}
                     onClick={() => onSelectSession(session.id)}
+                    onDoubleClick={() => {
+                      const nextTitle = window.prompt("Rename chat", session.title);
+                      if (nextTitle) onRenameSession?.(session.id, nextTitle);
+                    }}
                     type="button"
                   >
+                    {session.pinned ? "📌 " : ""}
                     {session.title}
+                  </button>
+                  <button
+                    aria-label={`Pin ${session.title}`}
+                    className="ws-btn ws-btn-ghost"
+                    onClick={() => onPinSession?.(session.id, !session.pinned)}
+                    type="button"
+                  >
+                    ☆
+                  </button>
+                  <button
+                    aria-label={`Export ${session.title}`}
+                    className="ws-btn ws-btn-ghost"
+                    onClick={() => onDownloadSession?.(session.id)}
+                    type="button"
+                  >
+                    ↓
                   </button>
                   <button
                     aria-label={`Delete ${session.title}`}
@@ -148,7 +182,7 @@ export default function Sidebar({
                 </div>
               ))
             ) : (
-              <div className="ws-empty-inline">No saved chats yet.</div>
+              <div className="ws-empty-inline">No saved chats for this workspace yet.</div>
             )}
 
             {agentTask && (
@@ -277,6 +311,27 @@ export default function Sidebar({
               placeholder="Model override (optional)"
               value={chatSettings.model}
             />
+            {ollamaStatus?.models?.length > 0 && (
+              <select
+                className="ws-search-input"
+                onChange={(event) => onChatSettingsChange({ model: event.target.value })}
+                value={chatSettings.model || ollamaStatus.model}
+              >
+                {ollamaStatus.models.map((modelName) => (
+                  <option key={modelName} value={modelName}>
+                    {modelName}
+                  </option>
+                ))}
+              </select>
+            )}
+            {ollamaStatus && (
+              <div className="ws-muted-copy" style={{ fontSize: "0.78rem", marginTop: "8px" }}>
+                {ollamaStatus.message}
+                {ollamaStatus.context_window_chars
+                  ? ` · Context ${ollamaStatus.context_window_chars} chars`
+                  : ""}
+              </div>
+            )}
 
             <div className="ws-sidebar-section-label">Project Generation Target</div>
             <label className="ws-settings-row">

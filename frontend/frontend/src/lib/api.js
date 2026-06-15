@@ -15,6 +15,14 @@ function formatApiError(data, status) {
     return data.detail;
   }
 
+  if (data?.detail && typeof data.detail === "object") {
+    try {
+      return JSON.stringify(data.detail, null, 2);
+    } catch {
+      return String(data.detail);
+    }
+  }
+
   if (Array.isArray(data?.detail)) {
     return data.detail
       .map((item) => item?.msg || item?.message || JSON.stringify(item))
@@ -94,6 +102,43 @@ export function getOllamaStatus(model) {
 
 export function getProject(projectName) {
   return request(`/projects/${encodeURIComponent(projectName)}`);
+}
+
+export function getProjectIntelligence(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/intelligence`);
+}
+
+export function rebuildProjectIndex(projectName) {
+  return request(`/projects/${encodeURIComponent(projectName)}/index/rebuild`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function searchProjectIndex(projectName, query, limit = 25) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return request(`/projects/${encodeURIComponent(projectName)}/index/search?${params}`);
+}
+
+export function analyzeTerminalLogs(projectName, logs) {
+  return request(`/projects/${encodeURIComponent(projectName)}/terminal/analyze`, {
+    method: "POST",
+    body: JSON.stringify({ logs }),
+  });
+}
+
+export function suggestGitCommitMessage(projectName, { diff, changes }) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/suggest-commit`, {
+    method: "POST",
+    body: JSON.stringify({ diff, changes }),
+  });
+}
+
+export function summarizeGitDiff(projectName, diff) {
+  return request(`/projects/${encodeURIComponent(projectName)}/git/summarize-diff`, {
+    method: "POST",
+    body: JSON.stringify({ diff }),
+  });
 }
 
 export function getProjectFile(projectName, filePath) {

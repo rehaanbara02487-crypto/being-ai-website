@@ -6,6 +6,8 @@ export default function TerminalView({
   selectedProject,
   projectRunning,
   runStatus,
+  terminalAnalysis,
+  onFixIssue,
   onRun,
   onStop,
 }) {
@@ -31,6 +33,23 @@ export default function TerminalView({
           )}
         </div>
       </div>
+
+      {terminalAnalysis?.has_errors && (
+        <div className="ws-error-panel" style={{ margin: "8px 12px 0" }}>
+          <strong>Run failed</strong>
+          <pre>{terminalAnalysis.findings?.map((item) => item.message).join("\n") || terminalAnalysis.excerpt}</pre>
+          {onFixIssue && (
+            <button
+              className="ws-btn ws-btn-primary"
+              onClick={() => onFixIssue(terminalAnalysis.suggested_prompt)}
+              style={{ marginTop: "8px" }}
+              type="button"
+            >
+              Fix Issue
+            </button>
+          )}
+        </div>
+      )}
 
       <div ref={terminalRef} className="ws-terminal">
         {terminalLogs.length ? (

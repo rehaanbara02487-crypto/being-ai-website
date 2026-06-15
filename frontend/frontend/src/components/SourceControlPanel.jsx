@@ -11,6 +11,8 @@ import {
   getGitStatus,
   restoreGitRef,
   revertGitCommit,
+  suggestGitCommitMessage,
+  summarizeGitDiff,
   switchGitBranch,
 } from "../lib/api";
 
@@ -89,6 +91,40 @@ export default function SourceControlPanel({ selectedProject, onWorkspaceChanged
       setDiff(diffData.diff || "No diff available.");
     } catch (diffError) {
       setError(diffError.message);
+    }
+  }
+
+  async function suggestCommitMessage() {
+    if (!selectedProject) return;
+    setLoading(true);
+    setError("");
+    try {
+      const diffData = await getGitDiff(selectedProject, selectedPath || "");
+      const result = await suggestGitCommitMessage(selectedProject, {
+        diff: diffData.diff || diff,
+        changes,
+      });
+      setCommitMessage(result.message || "");
+      setMessage("Suggested commit message ready.");
+    } catch (suggestError) {
+      setError(suggestError.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function summarizeSelectedDiff() {
+    if (!selectedProject) return;
+    setLoading(true);
+    setError("");
+    try {
+      const diffData = await getGitDiff(selectedProject, selectedPath || "");
+      const result = await summarizeGitDiff(selectedProject, diffData.diff || diff);
+      setMessage(result.summary || "Diff summarized.");
+    } catch (summaryError) {
+      setError(summaryError.message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -325,6 +361,24 @@ export default function SourceControlPanel({ selectedProject, onWorkspaceChanged
               width: "100%",
             }}
           />
+          <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+            <button
+              disabled={!changes.length || loading}
+              onClick={suggestCommitMessage}
+              style={{ ...smallButton, flex: 1 }}
+              type="button"
+            >
+              AI Commit Message
+            </button>
+            <button
+              disabled={!diff || loading}
+              onClick={summarizeSelectedDiff}
+              style={{ ...smallButton, flex: 1 }}
+              type="button"
+            >
+              Summarize Diff
+            </button>
+          </div>
           <button
             disabled={!commitMessage.trim() || !changes.length}
             onClick={commitChanges}

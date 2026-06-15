@@ -101,6 +101,54 @@ def is_greenfield_prompt(prompt: str) -> bool:
     )
 
 
+def try_simple_file_plan(prompt: str) -> dict | None:
+    """Fast path for explicit single-file create prompts (no Ollama scaffold)."""
+    quoted = re.search(
+        r"(?:create|make|write|add)\s+([\w./-]+\.[A-Za-z0-9]+)\s+with\s+content\s+['\"]?(.+?)['\"]?\s*$",
+        prompt.strip(),
+        re.I | re.S,
+    )
+    if quoted:
+        file_path = quoted.group(1).replace("\\", "/")
+        content = quoted.group(2).strip().strip('"').strip("'")
+        slug = re.sub(r"[^a-z0-9-]+", "-", Path(file_path).stem.lower()).strip("-") or "file"
+        return {
+            "project_name": slug,
+            "message": f"Create {file_path}",
+            "tool_calls": [
+                {
+                    "tool": "create_file",
+                    "args": {"path": file_path, "content": content},
+                }
+            ],
+            "stack": "file",
+            "simple_file": True,
+        }
+
+    file_only = re.search(
+        r"(?:create|make|write|add)\s+([\w./-]+\.[A-Za-z0-9]+)\s*$",
+        prompt.strip(),
+        re.I,
+    )
+    if file_only:
+        file_path = file_only.group(1).replace("\\", "/")
+        slug = re.sub(r"[^a-z0-9-]+", "-", Path(file_path).stem.lower()).strip("-") or "file"
+        return {
+            "project_name": slug,
+            "message": f"Create {file_path}",
+            "tool_calls": [
+                {
+                    "tool": "create_file",
+                    "args": {"path": file_path, "content": ""},
+                }
+            ],
+            "stack": "file",
+            "simple_file": True,
+        }
+
+    return None
+
+
 def planning_project_dir(project_name: str, project_dir: Path | None = None) -> Path:
     ensure_project_name_safe(project_name)
     if project_dir is not None:
@@ -122,12 +170,39 @@ Required folders: {", ".join(template["required_folders"]) or "(none)"}
 Required files: {", ".join(template["required_files"])}
 """.strip()
 
+    from app.generation_log import log_generation_step
+
+    log_generation_step(
+        "PLANNER START",
+        phase="scaffold",
+        model=model,
+        prompt_preview=planning_prompt[:400],
+    )
+    log_generation_step(
+        "OLLAMA REQUEST",
+        phase="scaffold",
+        model=model,
+    )
     response_text = generate_text_response(
         planning_prompt,
         model=model,
         system_prompt=GREENFIELD_PHASE1_PROMPT,
     )
-    scaffold = extract_json_object(response_text)
+    log_generation_step(
+        "OLLAMA RESPONSE",
+        phase="scaffold",
+        response_preview=response_text[:800],
+    )
+    try:
+        scaffold = extract_json_object(response_text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        log_generation_step(
+            "GENERATION FAILED",
+            phase="scaffold",
+            error=str(exc),
+            raw_response=response_text[:2000],
+        )
+        raise
 
     resolved_name = derive_project_slug(
         prompt,
@@ -170,12 +245,34 @@ Template guidance:
 {template["guidance"]}
 """.strip()
 
+    from app.generation_log import log_generation_step
+
+    log_generation_step(
+        "OLLAMA REQUEST",
+        phase="file_batch",
+        model=model,
+        files=[item.get("path") for item in file_batch],
+    )
     response_text = generate_text_response(
         batch_prompt,
         model=model,
         system_prompt=GREENFIELD_PHASE2_PROMPT,
     )
-    parsed = extract_json_object(response_text)
+    log_generation_step(
+        "OLLAMA RESPONSE",
+        phase="file_batch",
+        response_preview=response_text[:800],
+    )
+    try:
+        parsed = extract_json_object(response_text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        log_generation_step(
+            "GENERATION FAILED",
+            phase="file_batch",
+            error=str(exc),
+            raw_response=response_text[:2000],
+        )
+        raise
     tool_calls = parsed.get("tool_calls", [])
     return tool_calls if isinstance(tool_calls, list) else []
 
@@ -243,6 +340,64 @@ def plan_new_project(
     target_path: str | None = None,
     current_workspace: str | None = None,
 ) -> dict:
+    from app.generation_log import log_generation_step
+    from app.workspace_registry import resolve_greenfield_target
+
+    simple_plan = try_simple_file_plan(prompt)
+    if simple_plan:
+        log_generation_step(
+            "GENERATION DETECTED",
+            mode="simple_file",
+            prompt_preview=prompt[:200],
+            target=target,
+            current_workspace=current_workspace,
+        )
+        tool_calls = simple_plan["tool_calls"]
+        project_dir, workspace_meta = resolve_greenfield_target(
+            target,
+            target_path=target_path,
+            current_project_slug=current_workspace,
+            project_name=simple_plan["project_name"],
+        )
+        previews = preview_actions(project_dir, tool_calls)
+        valid_count = len([preview for preview in previews if preview.get("valid")])
+        invalid = [
+            {"path": preview.get("path"), "error": preview.get("error")}
+            for preview in previews
+            if not preview.get("valid")
+        ]
+        log_generation_step(
+            "REVIEW CREATED",
+            preview_count=len(previews),
+            valid_count=valid_count,
+            invalid_previews=invalid,
+            workspace_path=str(project_dir),
+        )
+        return {
+            "message": simple_plan["message"],
+            "tool_calls": tool_calls,
+            "previews": previews,
+            "change_summary": build_change_summary(previews),
+            "requires_approval": True,
+            "is_greenfield": True,
+            "proposed_project_name": simple_plan["project_name"],
+            "workspace_slug": workspace_meta["slug"],
+            "workspace_path": workspace_meta["path"],
+            "workspace_kind": workspace_meta["kind"],
+            "greenfield_target": target,
+            "generate_in_place": target == "in_place",
+            "stack": "file",
+            "run_profile": None,
+            "scaffold": {"folders": [], "files": [tool_calls[0]["args"]["path"]]},
+        }
+
+    log_generation_step(
+        "GENERATION DETECTED",
+        mode="greenfield_scaffold",
+        prompt_preview=prompt[:200],
+        target=target,
+        current_workspace=current_workspace,
+    )
     scaffold = plan_scaffold(prompt, model, stack, project_name)
     template = get_template(scaffold["stack"])
 
@@ -259,8 +414,6 @@ def plan_new_project(
 
     tool_calls = merge_tool_calls(scaffold, batches)
 
-    from app.workspace_registry import resolve_greenfield_target
-
     project_dir, workspace_meta = resolve_greenfield_target(
         target,
         target_path=target_path,
@@ -268,6 +421,19 @@ def plan_new_project(
         project_name=scaffold["project_name"],
     )
     previews = preview_actions(project_dir, tool_calls)
+    valid_count = len([preview for preview in previews if preview.get("valid")])
+    invalid = [
+        {"path": preview.get("path"), "error": preview.get("error")}
+        for preview in previews
+        if not preview.get("valid")
+    ]
+    log_generation_step(
+        "REVIEW CREATED",
+        preview_count=len(previews),
+        valid_count=valid_count,
+        invalid_previews=invalid,
+        workspace_path=str(project_dir),
+    )
 
     plan = {
         "message": scaffold.get("message") or f"Planned new project {scaffold['project_name']}.",

@@ -11,18 +11,24 @@ import {
   startAutonomousAgentTask,
   stopAutonomousAgentTask,
 } from "../lib/api";
-import { logAgentDebug, logGeneration, extractCreatedFiles } from "../lib/agentDebug";
+import { logAgentDebug, logGeneration, extractCreatedFiles, recordGenerationStep, GENERATION_TAGS } from "../lib/agentDebug";
+import { TIMEOUTS, withTimeout } from "../lib/taskTimeout";
 import MarkdownMessage from "./workspace/MarkdownMessage";
 import { ReviewPlanPanel } from "./workspace/ReviewActionCard";
+import GenerationDiagnosticsPanel from "./workspace/GenerationDiagnosticsPanel";
 
 function isGreenfieldPrompt(prompt, { selectedProject, workspaceKind } = {}) {
   const lowered = prompt.toLowerCase();
-  const hasVerb = /\b(build|create|make|generate|scaffold|new|add)\b/.test(lowered);
+  const hasVerb = /\b(build|create|make|generate|scaffold|new|add|write)\b/.test(lowered);
   const hasTarget =
     /\b(app|application|project|api|website|todo|react|flask|fastapi|portfolio)\b/.test(lowered);
+  const hasFileTarget = /\b[\w.-]+\.(txt|md|json|jsx?|tsx?|py|html|css|yaml|yml|csv|env)\b/i.test(
+    prompt
+  );
+  const hasContentPhrase = /\bwith content\b/i.test(prompt);
   const inThisFolder = /\b(this folder|in here|here)\b/.test(lowered);
 
-  if (hasVerb && (hasTarget || inThisFolder)) {
+  if (hasVerb && (hasTarget || inThisFolder || hasFileTarget || hasContentPhrase)) {
     return true;
   }
 
@@ -82,6 +88,8 @@ export default function ChatWorkspace({
   onChatSettingsChange,
   ollamaStatus,
   sessionId,
+  fixPrompt,
+  onFixPromptConsumed,
   initialMessages,
   onMessagesChange,
   onSessionTitleChange,
@@ -136,6 +144,13 @@ export default function ChatWorkspace({
   function ollamaReady() {
     return Boolean(ollamaStatus?.online && ollamaStatus?.model_available);
   }
+
+  useEffect(() => {
+    if (!fixPrompt?.trim()) return;
+    setInput(fixPrompt);
+    onFixPromptConsumed?.();
+    setError("");
+  }, [fixPrompt, onFixPromptConsumed]);
 
   useEffect(() => {
     if (initialMessages) {
@@ -230,6 +245,12 @@ export default function ChatWorkspace({
       createdFiles,
       count: createdFiles.length,
     });
+    recordGenerationStep(GENERATION_TAGS.generationComplete, {
+      projectName,
+      workspacePath: applyResult.workspace_path || plan.workspace_path || workspacePath,
+      createdFiles,
+      count: createdFiles.length,
+    });
 
     setMessages((currentMessages) =>
       currentMessages.map((message) =>
@@ -281,6 +302,25 @@ export default function ChatWorkspace({
         })
       : greenfieldTarget;
 
+    recordGenerationStep(GENERATION_TAGS.chatReceived, {
+      prompt,
+      selectedProject: selectedProject || null,
+      workspaceKind,
+      workspacePath,
+      agentMode,
+      greenfieldRequest,
+      useAgentPipeline,
+      generationTarget,
+    });
+
+    if (greenfieldRequest) {
+      recordGenerationStep(GENERATION_TAGS.generationDetected, {
+        generationTarget,
+        selectedProject,
+        workspaceKind,
+      });
+    }
+
     if (greenfieldRequest && generationTarget === "custom" && !greenfieldTargetPath.trim()) {
       setError("Choose a custom target folder in Settings before generating.");
       return;
@@ -303,7 +343,7 @@ export default function ChatWorkspace({
       setError("Select a project before using Autonomous Mode.");
       return;
     }
-    if (agentMode && !selectedProject && !isGreenfieldPrompt(prompt)) {
+    if (agentMode && !selectedProject && !isGreenfieldPrompt(prompt, { selectedProject, workspaceKind })) {
       setError('Use a build/create prompt (e.g. "Build a modern React Todo App") or select a project.');
       return;
     }
@@ -378,25 +418,46 @@ export default function ChatWorkspace({
             workspaceKind,
             workspacePath,
           });
+          recordGenerationStep(GENERATION_TAGS.plannerStart, {
+            endpoint: "POST /agent/projects/plan",
+            target: generationTarget,
+            currentWorkspace: selectedProject || null,
+            autoApply: true,
+          });
 
           let plan;
           try {
-            plan = await planNewProject({
-              prompt,
-              model: model.trim(),
-              target: generationTarget,
-              targetPath:
-                generationTarget === "custom" ? greenfieldTargetPath || undefined : undefined,
-              currentWorkspace: selectedProject || undefined,
-              autoApply: true,
-            });
+            plan = await withTimeout(
+              planNewProject({
+                prompt,
+                model: model.trim(),
+                target: generationTarget,
+                targetPath:
+                  generationTarget === "custom" ? greenfieldTargetPath || undefined : undefined,
+                currentWorkspace: selectedProject || undefined,
+                autoApply: true,
+              }),
+              TIMEOUTS.plan,
+              "Project generation"
+            );
           } catch (planError) {
             logGeneration("error", {
               stage: "plan",
               message: planError.message,
             });
+            recordGenerationStep(
+              GENERATION_TAGS.generationFailed,
+              { stage: "plan", message: planError.message },
+              { level: "error", message: planError.message }
+            );
             throw planError;
           }
+
+          const previews = plan.review_session?.previews || plan.previews || [];
+          const validPreviews = previews.filter((action) => action.valid);
+          const invalidPreviews = previews
+            .filter((action) => !action.valid)
+            .map((action) => ({ path: action.path, error: action.error }));
 
           logGeneration("plan", {
             message: plan.message,
@@ -404,7 +465,16 @@ export default function ChatWorkspace({
             workspace_slug: plan.workspace_slug,
             workspace_path: plan.workspace_path,
             generate_in_place: plan.generate_in_place,
-            preview_count: (plan.review_session?.previews || plan.previews || []).length,
+            preview_count: previews.length,
+            valid_count: validPreviews.length,
+            auto_applied: plan.auto_applied,
+          });
+          recordGenerationStep(GENERATION_TAGS.reviewCreated, {
+            review_session_id: plan.review_session?.id || plan.review_session_id,
+            preview_count: previews.length,
+            valid_count: validPreviews.length,
+            invalid_previews: invalidPreviews,
+            workspace_path: plan.workspace_path,
             auto_applied: plan.auto_applied,
           });
 
@@ -422,15 +492,28 @@ export default function ChatWorkspace({
           let applyResult = plan.apply_result;
 
           if (!applyResult && plan.review_session?.id) {
-            const validActions = (plan.review_session?.previews || plan.previews || []).filter(
-              (action) => action.valid
-            );
+            const validActions = validPreviews;
             if (validActions.length) {
+              recordGenerationStep(GENERATION_TAGS.applyStart, {
+                review_id: plan.review_session.id,
+                action_count: validActions.length,
+              });
               applyResult = await applyReviewActions({
                 reviewId: plan.review_session.id,
                 actionIds: validActions.map((action) => action.id),
               });
+            } else {
+              recordGenerationStep(
+                GENERATION_TAGS.generationFailed,
+                { stage: "apply", reason: "no valid previews", invalid_previews: invalidPreviews },
+                { level: "error", message: "No valid file actions to apply." }
+              );
             }
+          } else if (applyResult) {
+            recordGenerationStep(GENERATION_TAGS.applyStart, {
+              source: "auto_apply",
+              applied_count: applyResult.results?.length || 0,
+            });
           }
 
           if (applyResult) {
@@ -519,6 +602,16 @@ export default function ChatWorkspace({
       }
 
       logAgentDebug("endpoint", { endpoint: "POST /ollama/chat/stream" });
+      recordGenerationStep(
+        "CHAT STREAM (NOT GENERATION)",
+        {
+          reason: "Prompt did not match generation routing",
+          agentMode,
+          greenfieldRequest,
+          selectedProject: selectedProject || null,
+        },
+        { level: "error", message: "Routed to chat stream instead of generation pipeline." }
+      );
 
       await streamOllamaChat({
         prompt,
@@ -558,6 +651,11 @@ export default function ChatWorkspace({
         stage: "request",
         message: chatError.message,
       });
+      recordGenerationStep(
+        GENERATION_TAGS.generationFailed,
+        { stage: "request", message: chatError.message },
+        { level: "error", message: chatError.message }
+      );
       setError(chatError.message);
       setMessages((currentMessages) =>
         currentMessages.map((message) =>
@@ -798,6 +896,8 @@ export default function ChatWorkspace({
       </div>
 
       <form className="ws-composer" onSubmit={sendMessage}>
+        <GenerationDiagnosticsPanel />
+
         {!selectedProject && (
           <div className="ws-greenfield-hint">
             No project selected — try: &quot;Build a modern React Todo App&quot;
